@@ -60,11 +60,16 @@
   var FIELDS = [
     { id: 'date', label: '발생일자', req: true, aliases: ['발생일자', '발생일', '발생날짜', '일자', '날짜', '접수일', '접수일자', '발견일', '발견일자', 'date'] },
     { id: 'partName', label: '품명', req: false, aliases: ['품명', '품목명', '부품명', '품목', 'partname'] },
-    { id: 'partNo', label: '품번', req: true, aliases: ['품번', '부품번호', '품목번호', '품목코드', 'partno', 'p/n', 'pn'] },
-    { id: 'problem', label: '문제점', req: true, aliases: ['문제점', '불량내용', '불량현상', '문제내용', '현상', '내용', '불량명', '불량유형', 'defect'] },
+    { id: 'partNo', label: '품번', req: false, aliases: ['품번', '부품번호', '품목번호', '품목코드', 'partno', 'p/n', 'pn'] },
+    { id: 'problem', label: '내용(문제점)', req: true, aliases: ['문제점', '불량내용', '불량현상', '문제내용', '현상', '내용', '불량명', 'defect'] },
     { id: 'supplier', label: '협력사', req: true, aliases: ['협력사', '협력사명', '협력업체', '업체', '업체명', '공급사', '거래처', 'supplier', 'vendor'] },
-    { id: 'qty', label: '수량(선택)', req: false, aliases: ['수량', '불량수량', 'qty'] }
+    { id: 'type', label: '불량유형(선택)', req: false, aliases: ['불량유형', '유형', '불량구분', '불량분류', '불량코드', 'type', 'defecttype'] },
+    { id: 'qty', label: '수량(선택)', req: false, aliases: ['수량', '불량수량', 'qty'] },
+    { id: 'action', label: '조치(선택)', req: false, aliases: ['조치', '조치내용', '조치사항', '처리', '처리내용', '처리결과', 'action'] }
   ];
+  /* 엑셀 붙여넣기에 머리행이 없을 때의 열 순서 = 불량 등록 화면·붙여넣기 양식의 순서 */
+  var PASTE_ORDER = ['date', 'supplier', 'partNo', 'partName', 'type', 'problem', 'qty', 'action'];
+  function fieldLabel(id) { var f = FIELDS.filter(function (x) { return x.id === id; })[0]; return f ? f.label.replace(/\(.*\)$/, '') : id; }
   function normHead(v) { return str(v).replace(/\(.*?\)|\[.*?\]/g, '').replace(/[\s·.:_\-]/g, '').toLowerCase(); }
   function matchField(h, taken) {
     var n = normHead(h), i, f;
@@ -108,7 +113,11 @@
       };
       var q = Number(cell(row, 'qty'));
       if (M.qty != null && isFinite(q) && str(cell(row, 'qty')) !== '') rec.qty = q;
+      if (str(cell(row, 'type'))) rec.typeIn = str(cell(row, 'type'));
+      if (str(cell(row, 'action'))) rec.action = str(cell(row, 'action')).replace(/\s*\n\s*/g, ' ');
       if (!rec.problem && !rec.supplier && !rec.partNo) { if (row.some(function (v) { return str(v); })) skipped++; continue; }
+      // 내용이 비었어도 불량유형 칸이 있으면 그것을 내용으로 씁니다(유형만 적는 대장도 있어서)
+      if (!rec.problem && rec.typeIn) rec.problem = rec.typeIn;
       if (!rec.problem || !rec.supplier) { skipped++; continue; }
       if (!rec.date) badDate++;
       out.push(rec);
@@ -150,30 +159,82 @@
     });
     return { records: out, added: added, dup: dup, seq: seq };
   }
+  /* 엑셀에서 복사한 표(탭으로 나뉜 글) → 배열의 배열. 칸 안 줄바꿈은 엑셀이 "…" 로 감싸 줍니다 */
+  function splitTsv(text) {
+    var s = String(text == null ? '' : text).replace(/\r\n?/g, '\n'), rows = [], row = [], cell = '', i = 0, q = false;
+    while (i < s.length) {
+      var ch = s.charAt(i);
+      if (q) {
+        if (ch === '"' && s.charAt(i + 1) === '"') { cell += '"'; i += 2; continue; }
+        if (ch === '"') { q = false; i++; continue; }
+        cell += ch; i++; continue;
+      }
+      if (ch === '"' && cell === '') { q = true; i++; continue; }
+      if (ch === '\t') { row.push(cell); cell = ''; i++; continue; }
+      if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; i++; continue; }
+      cell += ch; i++;
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter(function (r) { return r.some(function (v) { return str(v); }); });
+  }
+  /* 붙여넣기 읽기 — 머리행(열 이름)이 있으면 그 이름으로, 없으면 PASTE_ORDER 순서로 읽습니다.
+     날짜처럼 읽히는 칸이 있는 줄은 머리행으로 보지 않습니다(데이터 줄을 머리행으로 오해하지 않게) */
+  function parsePaste(text) {
+    var aoa = splitTsv(text);
+    if (!aoa.length) return { records: [], badDate: 0, skipped: 0, header: false, rows: 0, missing: [] };
+    var det = detectColumns(aoa);
+    var header = det.headerRow >= 0 && !(aoa[det.headerRow] || []).some(function (v) { return parseDate(v); });
+    var p;
+    if (header) p = parseSheet(aoa);
+    else {
+      var map = {}; PASTE_ORDER.forEach(function (id, c) { map[id] = c; });
+      p = parseRows([PASTE_ORDER.slice()].concat(aoa), { headerRow: 0, map: map, missing: [] });
+      p.det = { headerRow: -1, map: map, missing: [] };
+    }
+    return { records: p.records, badDate: p.badDate, skipped: p.skipped, header: header, rows: aoa.length - (header ? det.headerRow + 1 : 0), missing: p.det.missing || [] };
+  }
+  /* 화면에서 직접 등록하는 한 건 — 점검 후 저장용 레코드로 */
+  function checkRecordInput(o, types) {
+    var e = [];
+    if (!str(o.date)) e.push('발생일자를 골라 주세요.');
+    else if (!parseDate(o.date)) e.push('발생일자를 읽지 못했습니다(예: 2026-10-05).');
+    if (!str(o.supplier)) e.push('협력사를 적어 주세요.');
+    if (!str(o.problem)) e.push('내용(문제점)을 적어 주세요.');
+    if (str(o.qty) !== '' && !(isFinite(Number(o.qty)) && Number(o.qty) >= 0)) e.push('수량은 0 이상의 숫자로 적어 주세요.');
+    if (str(o.type) && str(o.type) !== UNCLASSIFIED && typeNames(types).indexOf(str(o.type)) < 0) e.push('불량유형을 목록에서 골라 주세요.');
+    return e;
+  }
+  function recordFromInput(o) {
+    var r = { date: parseDate(o.date), partName: str(o.partName), partNo: str(o.partNo), problem: str(o.problem).replace(/\s*\n\s*/g, ' '), supplier: str(o.supplier) };
+    if (str(o.qty) !== '') r.qty = Number(o.qty);
+    if (str(o.type)) r.typeManual = str(o.type);
+    if (str(o.action)) r.action = str(o.action);
+    return r;
+  }
 
   /* ── 3. 불량유형 분류 (키워드 사전, 설정에서 고침) ─────────────── */
   var UNCLASSIFIED = '미분류';
   var DEFAULT_DEPTS = ['부품품질팀', '협력사', '구매팀', '생산기술팀', '설계팀'];
   /* actions: [대책, 담당부서, 시작(기준일부터 몇 주 뒤), 기간(주)] — 1단계 기본 대책(가정). 실제 코드표·부서를 받으면 바꿉니다 */
   var DEFAULT_TYPES = [
-    { name: '이종 불량', dept: '협력사', keywords: ['이종', '오품', '혼입', '혼용', '타품', '오삽', '오출하', '품번 상이', '품번 오류', '라벨 오류', '식별 오류', '사양 상이'],
-      actions: [['이종품 혼입 경로 조사(입고·보관·가공·출하 단계별)', '협력사', 0, 1], ['품번별 식별표·보관 위치 구분, 출하 전 라벨·바코드 대조 도입', '협력사', 1, 2], ['출하검사 체크시트에 품번 대조 항목 추가·현장 점검', '부품품질팀', 2, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] },
-    { name: '용접 균열', dept: '협력사', keywords: ['균열', '크랙', 'crack', '갈라짐', '터짐', '용접부 깨짐'],
-      actions: [['균열 부위 원인 분석(용접 조건·모재·예열 여부 확인)', '협력사', 0, 2], ['용접 조건(전류·전압·속도·예열) 표준 재설정, 작업표준서 개정', '협력사', 2, 2], ['용접부 비파괴검사(PT/MT) 샘플링 강화', '부품품질팀', 2, 4], ['용접사 교육·자격 점검', '협력사', 3, 1], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 6, 4]] },
-    { name: '용접 불량', dept: '협력사', keywords: ['용접', '기공', '블로우홀', '언더컷', '스패터', '미용접', '비드', '각장', '용입', '오버랩'],
-      actions: [['용접 결함 유형별 발생 위치 조사', '협력사', 0, 1], ['지그·용접 순서 점검, 비드·각장 한도견본 제작', '협력사', 1, 2], ['자주검사 항목에 용접 외관 추가', '협력사', 2, 1], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] },
-    { name: '가공 치수불량', dept: '협력사', keywords: ['치수', '공차', '가공', '홀 위치', '홀위치', '탭', '나사산', '동심', '평면도', '진원', '규격 초과', '규격 미달', 'burr', '바리'],
-      actions: [['치수 불량 부위 측정·공정능력(Cpk) 확인', '협력사', 0, 2], ['공구 마모·교체 주기와 가공 조건 점검', '협력사', 1, 2], ['초·중·종물 측정 기록 의무화', '협력사', 2, 2], ['도면 공차 적정성 검토', '설계팀', 2, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 5, 4]] },
-    { name: '도장 불량', dept: '협력사', keywords: ['도장', '페인트', '도막', '흐름', '기포', '박리', '핀홀', '미도장', '색상', '오렌지필'],
-      actions: [['전처리·도막 두께 관리 기준 점검', '협력사', 0, 2], ['도장 조건·환경(온습도) 기록 시작', '협력사', 1, 2], ['입고검사 도막 측정 샘플링 추가', '부품품질팀', 2, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] },
-    { name: '외관 불량', dept: '협력사', keywords: ['찍힘', '스크래치', '긁힘', '이물', '오염', '변형', '휨', '눌림', '외관'],
-      actions: [['취급·적재 방법 점검', '협력사', 0, 1], ['포장 사양 개선(완충재·칸막이)', '협력사', 1, 2], ['운송 중 손상 여부 확인', '구매팀', 1, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] },
-    { name: '조립·체결 불량', dept: '협력사', keywords: ['조립', '체결', '토크', '누락', '미체결', '볼트', '너트', '와셔', '오조립', '풀림'],
-      actions: [['체결 토크 관리 기준·공구 교정 점검', '협력사', 0, 2], ['부품 누락 방지(키팅·체크시트) 도입', '협력사', 1, 2], ['조립 순서 작업표준서 개정', '생산기술팀', 2, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] },
-    { name: '누유·누수', dept: '협력사', keywords: ['누유', '누수', '리크', 'leak', '오일 샘', '기밀'],
-      actions: [['기밀 시험 조건(압력·시간) 점검', '협력사', 0, 2], ['실링면 가공 상태·오링 체결 확인', '협력사', 1, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] },
-    { name: '녹·부식', dept: '협력사', keywords: ['녹 발생', '녹발생', '녹슴', '부식', '발청', '산화'],
-      actions: [['방청 처리·보관 환경 점검', '협력사', 0, 2], ['방청 포장 사양 개선', '협력사', 1, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] }
+    /* 수강생이 정한 불량유형 8종(2026-10-21 답변). 키워드·기본 대책은 1단계 가정 — 설정에서 고칩니다.
+       도장·외관·녹 같은 것은 8종에 없어 「기타」의 키워드로 두었습니다. */
+    { name: '위치/치수', dept: '협력사', keywords: ['치수', '공차', '홀 위치', '홀위치', '위치 불량', '위치 틀림', '위치 상이', '피치', '길이', '외경', '내경', '두께', '높이', '편심', '평면도', '동심', '진원', '규격 초과', '규격 미달', '가공', '탭', '나사산', 'burr', '바리'],
+      actions: [['치수·위치 불량 부위 측정, 공정능력(Cpk) 확인', '협력사', 0, 2], ['지그·기준면·공구 마모 점검, 가공 조건 재설정', '협력사', 1, 2], ['초·중·종물 측정 기록 의무화', '협력사', 2, 2], ['도면 공차·기준 위치 적정성 검토', '설계팀', 2, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 5, 4]] },
+    { name: '간섭/정렬', dept: '협력사', keywords: ['간섭', '정렬', '틀어짐', '어긋남', '단차', '유격', '센터', '직각', '평행', '비틀림', '닿음', '맞지 않음', '조립 불가', '조립불가', '쏠림', '오조립', '역조립', '방향 반대'],
+      actions: [['간섭·정렬 불량 부위와 상대 부품 조사(조립 상태 재현)', '협력사', 0, 1], ['조립 지그·위치 결정핀 점검, 정렬 기준 한도견본 제작', '협력사', 1, 2], ['상대 부품 공차 누적 검토', '설계팀', 1, 2], ['조립 순서 작업표준서 개정', '생산기술팀', 2, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] },
+    { name: '이종/누락', dept: '협력사', keywords: ['이종', '오품', '혼입', '혼용', '타품', '오삽', '오출하', '품번 상이', '품번 오류', '라벨 오류', '식별 오류', '사양 상이', '누락', '결품', '빠짐', '미장착', '미부착', '미삽입', '수량 부족'],
+      actions: [['이종·누락 발생 경로 조사(입고·보관·가공·조립·출하 단계별)', '협력사', 0, 1], ['품번별 식별표·보관 위치 구분, 부품 키팅·체크시트 도입', '협력사', 1, 2], ['출하 전 라벨·바코드 대조, 누락 확인 항목 추가', '협력사', 2, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] },
+    { name: '용접불량', dept: '협력사', keywords: ['용접', '균열', '크랙', 'crack', '갈라짐', '기공', '블로우홀', '언더컷', '스패터', '미용접', '비드', '각장', '용입', '오버랩'],
+      actions: [['용접 결함 유형별 발생 위치·원인 분석(용접 조건·모재·예열)', '협력사', 0, 2], ['용접 조건(전류·전압·속도·예열) 표준 재설정, 작업표준서 개정', '협력사', 2, 2], ['용접부 외관·비파괴검사(PT/MT) 샘플링 강화', '부품품질팀', 2, 4], ['용접사 교육·자격 점검, 지그·용접 순서 점검', '협력사', 3, 1], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 6, 4]] },
+    { name: '누유/누수', dept: '협력사', keywords: ['누유', '누수', '리크', 'leak', '오일 샘', '물 샘', '기밀', '새어', '맺힘'],
+      actions: [['기밀 시험 조건(압력·시간) 점검', '협력사', 0, 2], ['실링면 가공 상태·오링·피팅 체결 확인', '협력사', 1, 2], ['누유/누수 검사 전수화 여부 검토', '부품품질팀', 2, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] },
+    { name: '미조임', dept: '협력사', keywords: ['미조임', '조임 불량', '조임불량', '미체결', '체결', '토크', '풀림', '헐거', '볼트', '너트'],
+      actions: [['체결 토크 관리 기준·토크 공구 교정 점검', '협력사', 0, 2], ['체결 확인 마킹(토크 마킹)·체크시트 도입', '협력사', 1, 2], ['체결 순서 작업표준서 개정', '생산기술팀', 2, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] },
+    { name: '성능이상', dept: '협력사', keywords: ['성능', '작동', '동작', '기능', '소음', '이음', '진동', '발열', '압력 저하', '압력 부족', '출력', '응답', '고장', '불능'],
+      actions: [['성능이상 재현 시험·원인 부품 분리', '협력사', 0, 2], ['출하 성능검사 항목·판정 기준 점검', '부품품질팀', 1, 2], ['설계 사양·시험 조건 검토', '설계팀', 2, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] },
+    { name: '기타', dept: '협력사', keywords: ['도장', '도막', '도막 두께', '페인트', '찍힘', '스크래치', '긁힘', '이물', '오염', '녹 발생', '녹발생', '부식', '변형', '외관', '포장'],
+      actions: [['발생 내용 확인·원인 조사', '협력사', 0, 2], ['재발 방지 대책 수립·작업표준 반영', '협력사', 2, 2], ['유효성 확인(대책 후 재발 여부 추적)', '부품품질팀', 4, 4]] }
   ];
   function defaultTypes() {
     return DEFAULT_TYPES.map(function (t) {
@@ -182,7 +243,7 @@
   }
   function normText(s) { return str(s).toLowerCase().replace(/\s+/g, ''); }
   /* 점수 = 맞은 키워드 가운데 가장 긴 것의 글자 수(긴 키워드가 더 구체적).
-     같으면 사전에서 위에 있는 유형 — 그래서 사전 순서가 곧 우선순위입니다(「용접 비드 균열」 → 위에 있는 용접 균열). */
+     같으면 사전에서 위에 있는 유형 — 그래서 사전 순서가 곧 우선순위입니다(「이종 볼트 혼용」 → 혼용·볼트 모두 2글자 → 위에 있는 이종/누락). */
   function classify(text, types) {
     var t = normText(text), best = null;
     (types || []).forEach(function (ty, i) {
@@ -196,17 +257,28 @@
     return best || { type: UNCLASSIFIED, hits: [], score: 0, index: -1 };
   }
   function typeNames(types) { return (types || []).map(function (t) { return t.name; }); }
-  /* 사용자가 직접 고른 유형(typeManual)이 사전에 있으면 그것이 먼저입니다 */
+  /* 유형 이름 맞추기 — 띄어쓰기·「/」「·」 같은 구분 기호는 무시(「위치·치수」「위치 / 치수」 → 위치/치수, 「용접 불량」 → 용접불량) */
+  function normType(s) { return str(s).toLowerCase().replace(/[\s\/·・,.\-_()\[\]]/g, ''); }
+  function findTypeName(s, types) {
+    var n = normType(s), names = typeNames(types), i;
+    if (!n) return '';
+    for (i = 0; i < names.length; i++) if (normType(names[i]) === n) return names[i];
+    if (n.length >= 2) for (i = 0; i < names.length; i++) { var m = normType(names[i]); if (m.length >= 2 && (n.indexOf(m) >= 0 || m.indexOf(n) >= 0)) return names[i]; }
+    return '';
+  }
+  /* 순서: ① 사람이 고른 유형(typeManual) ② 엑셀의 불량유형 칸(typeIn)이 사전 이름과 맞으면 그것 ③ 내용 키워드 */
   function typeOf(rec, types) {
     if (rec.typeManual && (rec.typeManual === UNCLASSIFIED || typeNames(types).indexOf(rec.typeManual) >= 0)) return { type: rec.typeManual, hits: [], manual: true };
-    var c = classify(rec.problem, types);
+    var col = rec.typeIn ? findTypeName(rec.typeIn, types) : '';
+    if (col) return { type: col, hits: [], manual: false, column: true };
+    var c = classify(rec.problem + (rec.typeIn ? ' ' + rec.typeIn : ''), types);
     return { type: c.type, hits: c.hits, manual: false };
   }
   function enrich(records, types) {
     return records.map(function (r) {
       var t = typeOf(r, types), c = {};
       Object.keys(r).forEach(function (k) { c[k] = r[k]; });
-      c.type = t.type; c.hits = t.hits; c.manual = t.manual;
+      c.type = t.type; c.hits = t.hits; c.manual = t.manual; c.column = !!t.column;
       return c;
     });
   }
@@ -522,11 +594,8 @@
     return { prompt: text, leaks: al ? findLeaks(text, al) : [] };
   }
   function matchType(s, types) {
-    var n = normText(s), names = typeNames(types);
-    if (!n) return '';
-    for (var i = 0; i < names.length; i++) if (normText(names[i]) === n) return names[i];
-    for (i = 0; i < names.length; i++) { var m = normText(names[i]); if (n.indexOf(m) >= 0 || m.indexOf(n) >= 0) return names[i]; }
-    return str(s);
+    if (!str(s)) return '';
+    return findTypeName(s, types) || str(s);
   }
   function weeksNum(s, def) { var m = /(\d+)/.exec(str(s)); return m ? +m[1] : def; }
   /* AI 답 읽기 — 「| 유형 | 대책 | 부서 | 시작 | 기간 |」 표(또는 탭으로 나뉜 줄). opts = { types, aliases, supplier, baseDate, newId } */
@@ -555,70 +624,136 @@
     return { summary: summary, rows: rows, skipped: skipped, checks: checks };
   }
 
-  /* ── 10. 보고서 (Excel 시트 = 배열의 배열) ──────────────────────
-     ctx = { suppliers:[이름], records(enrich 된 전체), plans, rules, today } */
-  function reportSheets(ctx) {
-    var sum = [], mp = [], det = [], raw = [], hist = [];
-    var title = '협력사 공정불량 분석 및 품질개선 Master Plan 보고서';
-    sum.push([title]);
-    sum.push(['작성일', ctx.today]);
-    sum.push([]);
-    var allRows = [];
-    var weeks = [];
-    ctx.suppliers.forEach(function (s) { var p = ctx.plans[s]; if (p) allRows = allRows.concat(p.rows); });
-    weeks = ganttColumns(allRows, 'week', { minCols: 1 });
-    mp.push(['협력사', 'No', '불량유형', '개선대책', '담당부서', '담당자', '계획 시작', '계획 완료', '실적 시작', '실적 완료', '상태', '지연'].concat(weeks.map(function (w) { return w.full; })));
-    det.push(['협력사', '불량유형', '발생 건수(기간)', '선정 근거', '대표 문제점', '개선대책', '담당부서', '담당자', '계획 기간', '실적 기간', '상태', '비고']);
-    raw.push(['발생일자', '협력사', '품번', '품명', '문제점', '불량유형', '분류 근거']);
-    hist.push(['협력사', '확정 버전', '확정 일시', '개선활동 수']);
-    ctx.suppliers.forEach(function (s) {
-      var plan = ctx.plans[s] || { rows: [] };
-      var an = analyze(ctx.records, { supplier: s, from: plan.from, to: plan.to }, ctx.rules);
-      var st = planStats(plan.rows, ctx.today);
-      sum.push(['■ ' + s]);
-      sum.push(['분석 기간', an.from + ' ~ ' + an.to]);
-      sum.push(['계획 상태', planStateText(plan)]);
-      sum.push(['계획 착수 기준일', plan.baseDate || '']);
-      sum.push(['불량 발생 건수', an.total]);
-      sum.push(['개선 필요 항목 수', an.issues.length]);
-      sum.push(['개선 활동 수', st.total]);
-      sum.push(['추진 기간(일)', st.days]);
-      sum.push(['완료 / 미완료 / 보류', st.done + ' / ' + st.open + ' / ' + st.hold]);
-      sum.push(['계획일 지난 미완료', st.overdue]);
-      if (plan.aiSummary) sum.push(['AI 요약(검토 필요)', plan.aiSummary]);
-      sum.push([]);
-      sum.push(['불량유형', '건수', '비율(%)', '누적(%)']);
-      an.byType.forEach(function (t) { sum.push([t.type, t.count, t.pct, t.cum]); });
-      sum.push([]);
-      sum.push(['개선 필요 항목', '건수', '근거']);
-      if (!an.issues.length) sum.push(['(규칙에 걸린 항목 없음)']);
-      an.issues.forEach(function (i) { sum.push([i.type, i.count, i.reasons.join(' / ')]); });
-      sum.push([]);
-      var issueBy = {}; an.issues.forEach(function (i) { issueBy[i.type] = i; });
-      var cntBy = {}; an.byType.forEach(function (t) { cntBy[t.type] = t.count; });
-      plan.rows.forEach(function (r, n) {
-        var sp = span(r.planStart, r.planEnd, weeks), sa = r.actStart ? span(r.actStart, r.actEnd || (r.status === 'done' ? r.actStart : ctx.today), weeks) : null;
-        mp.push([s, n + 1, r.type, r.action, r.dept, r.owner, r.planStart, r.planEnd, r.actStart, r.actEnd, STATUS[r.status], isOverdue(r, ctx.today) ? '지연' : '']
-          .concat(weeks.map(function (w, i) {
-            var p = sp && i >= sp[0] && i <= sp[1], a = sa && i >= sa[0] && i <= sa[1];
-            return a ? '●' : p ? '○' : '';
-          })));
-        var iss = issueBy[r.type];
-        det.push([s, r.type, cntBy[r.type] || 0, iss ? iss.reasons.join(' / ') : (r.note || ''), iss ? iss.problems.slice(0, 3).join(' / ') : '',
-          r.action, r.dept, r.owner, (r.planStart || '') + ' ~ ' + (r.planEnd || ''), r.actStart ? r.actStart + ' ~ ' + (r.actEnd || '') : '', STATUS[r.status], r.source === 'ai' ? 'AI 답 반영' : r.source === 'template' ? '기본 대책' : '직접 입력']);
-      });
-      an.rows.slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; }).forEach(function (r) {
-        raw.push([r.date, r.supplier, r.partNo, r.partName, r.problem, r.type, r.manual ? '직접 지정' : r.hits.length ? '키워드: ' + r.hits.join(', ') : '']);
-      });
-      (plan.confirmed || []).forEach(function (c) { hist.push([s, 'v' + c.version, c.at.replace('T', ' ').slice(0, 16), c.rows.length]); });
+  /* ── 10. 보고서 (Excel 시트 = 배열의 배열 + 서식 표시) ─────────────
+     웹 화면의 표 모양 그대로 6시트: 요약 · 불량 목록 · 유형별·협력사별 집계 · Master Plan · 간트 일정 · 확정 이력.
+     meta 는 js/xlsx-out.js 가 머리글 굵게·칸 색·틀 고정·거르기를 붙일 때 씁니다.
+     ctx = { suppliers:[이름], records(enrich 된 전체), plans, rules, today, types } */
+  var REPORT_TITLE = '협력사 공정불량 분석 및 품질개선 Master Plan 보고서';
+  function sourceText(r) { return r.source === 'ai' ? 'AI 답 반영' : r.source === 'template' ? '기본 대책' : '직접 입력'; }
+  function reportBook(ctx) {
+    var sheets = {}, meta = {};
+    var t = ctx.today, rules = cleanRules(ctx.rules);
+    var per = ctx.suppliers.map(function (s) {
+      var plan = ctx.plans[s] || { rows: [], confirmed: [] };
+      return { s: s, plan: plan, an: analyze(ctx.records, { supplier: s, from: plan.from, to: plan.to }, rules), st: planStats(plan.rows || [], t) };
     });
-    mp.push([]);
-    mp.push(['표시: ○ 계획 기간 · ● 실적 기간 · 상태 = 완료/미완료/보류']);
-    return { '요약': sum, 'Master Plan': mp, '개선대책 상세': det, '불량 상세': raw, '확정 이력': hist };
+    var rows = []; per.forEach(function (x) { rows = rows.concat(x.an.rows); });
+    rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.supplier < b.supplier ? -1 : a.supplier > b.supplier ? 1 : 0); });
+    var total = analyze(rows, {}, rules);
+    // 이슈는 협력사마다 그 협력사 기간으로 계산한 것을 모읍니다(합친 표로 다시 계산하면 기간이 달라짐)
+    var issues = []; per.forEach(function (x) { issues = issues.concat(x.an.issues); });
+
+    // 1. 요약
+    var sum = [[REPORT_TITLE], ['작성일', t], []];
+    var sumHead = sum.length;
+    sum.push(['협력사', '분석 기간', '불량 건수', '개선 필요 항목', '개선활동', '완료', '미완료', '보류', '지연', '완료율(%)', '계획 상태']);
+    per.forEach(function (x) {
+      sum.push([x.s, x.an.from ? x.an.from + ' ~ ' + x.an.to : '', x.an.total, x.an.issues.length, x.st.total, x.st.done, x.st.open, x.st.hold, x.st.overdue, x.st.rate, (x.plan.rows || []).length ? planStateText(x.plan) : 'Master Plan 없음']);
+    });
+    var sumMeta = { title: [0], head: [sumHead], freeze: { rows: sumHead + 1 } };
+    var withAi = per.filter(function (x) { return x.plan.aiSummary; });
+    if (withAi.length) {
+      sum.push([]); sumMeta.section = [sum.length]; sum.push(['AI 요약 (검토 필요)']);
+      sumMeta.head.push(sum.length); sum.push(['협력사', '요약']);
+      withAi.forEach(function (x) { sum.push([x.s, x.plan.aiSummary]); });
+    }
+    sheets['요약'] = sum; meta['요약'] = sumMeta;
+
+    // 2. 불량 목록 — 불량 등록 화면의 칸 순서
+    var list = [['No', '발생일자', '협력사', '품번', '품명', '불량유형', '내용', '수량', '조치', '분류 근거']];
+    rows.forEach(function (r, i) {
+      list.push([i + 1, r.date, r.supplier, r.partNo, r.partName, r.type, r.problem, typeof r.qty === 'number' ? r.qty : '', r.action || '', r.manual ? '직접 지정' : r.column ? '불량유형 칸' : r.hits.length ? '키워드: ' + r.hits.join(', ') : '']);
+    });
+    sheets['불량 목록'] = list;
+    meta['불량 목록'] = { head: [0], freeze: { rows: 1 }, filter: 'A1:J' + list.length, widths: [6, 11, 12, 12, 14, 11, 40, 7, 30, 18] };
+
+    // 3. 유형별·협력사별 집계
+    var ag = [], am = { section: [], head: [] };
+    function sec(title) { if (ag.length) ag.push([]); am.section.push(ag.length); ag.push([title]); }
+    function head(cols) { am.head.push(ag.length); ag.push(cols); }
+    sec('불량유형별 건수 (파레토)');
+    head(['불량유형', '건수', '비율(%)', '누적(%)']);
+    total.byType.forEach(function (x) { ag.push([x.type, x.count, x.pct, x.cum]); });
+    ag.push(['합계', total.total, total.total ? 100 : 0, '']);
+    sec('협력사별 건수');
+    head(['협력사', '건수', '개선 필요 항목']);
+    total.suppliers.forEach(function (x) { ag.push([x.name, x.count, issues.filter(function (i) { return i.supplier === x.name; }).length]); });
+    sec('협력사 × 불량유형');
+    var tnames = ctx.types && ctx.types.length ? typeNames(ctx.types) : total.byType.map(function (x) { return x.type; }).filter(function (x) { return x !== UNCLASSIFIED; });
+    if (total.unclassified) tnames = tnames.concat([UNCLASSIFIED]);
+    head(['협력사'].concat(tnames, ['합계']));
+    var cm = {}; rows.forEach(function (r) { var k = r.supplier + '\u0000' + r.type; cm[k] = (cm[k] || 0) + 1; });
+    total.suppliers.forEach(function (x) { ag.push([x.name].concat(tnames.map(function (n) { return cm[x.name + '\u0000' + n] || 0; }), [x.count])); });
+    ag.push(['합계'].concat(tnames.map(function (n) { var c = 0; total.suppliers.forEach(function (x) { c += cm[x.name + '\u0000' + n] || 0; }); return c; }), [total.total]));
+    sec('개선 필요 항목');
+    head(['협력사', '불량유형', '건수', '근거']);
+    if (!issues.length) ag.push(['(규칙에 걸린 항목 없음)']);
+    issues.forEach(function (i) { ag.push([i.supplier, i.type, i.count, i.reasons.join(' / ')]); });
+    am.widths = [16, 12, 10, 12];
+    sheets['유형별·협력사별 집계'] = ag; meta['유형별·협력사별 집계'] = am;
+
+    // 4. Master Plan — 오른쪽 입력 칸의 항목 순서, 상태 칸은 화면 색
+    var mp = [['No', '협력사', '불량유형', '개선대책', '담당부서', '담당자', '계획 시작', '계획 완료', '실적 시작', '실적 완료', '상태', '지연', '근거·비고', '출처']];
+    var mpCells = [], all = [];
+    per.forEach(function (x) { (x.plan.rows || []).forEach(function (r) { all.push(r); }); });
+    all.forEach(function (r, n) {
+      mpCells.push({ r: mp.length, c: 10, style: r.status in STATUS ? r.status : 'open' });
+      mp.push([n + 1, r.supplier, r.type, r.action, r.dept, r.owner, r.planStart, r.planEnd, r.actStart, r.actEnd, STATUS[r.status] || STATUS.open, isOverdue(r, t) ? '지연' : '', r.note, sourceText(r)]);
+    });
+    if (!all.length) mp.push(['', '(아직 Master Plan 이 없습니다)']);
+    sheets['Master Plan'] = mp;
+    meta['Master Plan'] = { head: [0], cells: mpCells, freeze: { rows: 1 }, filter: 'A1:N' + mp.length, widths: [5, 12, 11, 44, 11, 10, 11, 11, 11, 11, 8, 6, 30, 10] };
+
+    // 5. 간트 일정 — 위 두 줄 = 월 / 주차, 칸 색: 계획 = 연한 파랑 ○, 실적 = 상태 색 ●
+    var weeks = ganttColumns(all, 'week', { minCols: 1, today: all.length ? '' : t });
+    var FIX = ['협력사', '불량유형', '개선대책', '담당부서', '상태'], nf = FIX.length;
+    var g0 = FIX.slice(), g1 = FIX.map(function () { return ''; }), merges = [], gc = [], todayCol = -1;
+    FIX.forEach(function (f, c) { merges.push({ s: { r: 0, c: c }, e: { r: 1, c: c } }); });
+    var col = nf;
+    groupSpans(weeks).forEach(function (g) { g0.push(g.group); for (var k = 1; k < g.n; k++) g0.push(''); if (g.n > 1) merges.push({ s: { r: 0, c: col }, e: { r: 0, c: col + g.n - 1 } }); col += g.n; });
+    weeks.forEach(function (w, i) { g1.push(w.label); if (w.start <= t && t <= w.end) todayCol = nf + i; });
+    var gantt = [g0, g1];
+    all.forEach(function (r) {
+      var sp = span(r.planStart, r.planEnd, weeks), sa = r.actStart ? span(r.actStart, r.actEnd || (r.status === 'done' ? r.actStart : (t > r.actStart ? t : r.actStart)), weeks) : null;
+      var line = [r.supplier, r.type, r.action, r.dept, STATUS[r.status] || STATUS.open], rr = gantt.length;
+      gc.push({ r: rr, c: 4, style: r.status in STATUS ? r.status : 'open' });
+      weeks.forEach(function (w, i) {
+        var p = sp && i >= sp[0] && i <= sp[1], a = sa && i >= sa[0] && i <= sa[1];
+        line.push(a ? '●' : p ? '○' : '');
+        if (a) gc.push({ r: rr, c: nf + i, style: r.status in STATUS ? r.status : 'open' });
+        else if (p) gc.push({ r: rr, c: nf + i, style: 'plan' });
+      });
+      gantt.push(line);
+    });
+    if (todayCol >= 0) gc.push({ r: 1, c: todayCol, style: 'today' });
+    gantt.push([]);
+    gantt.push(['표시: ○ 연한 파랑 = 계획 기간 · ● = 실적 기간(녹색 완료 · 주황 미완료 · 보라 보류) · 노란 머리 칸 = 이번 주. 주차는 목요일이 든 달 기준입니다.']);
+    sheets['간트 일정'] = gantt;
+    meta['간트 일정'] = { head: [0, 1], cells: gc, merges: merges, freeze: { rows: 2, cols: nf }, widths: [12, 11, 40, 11, 8].concat(weeks.map(function () { return 5; })) };
+
+    // 6. 확정 이력
+    var hist = [['협력사', '확정 버전', '확정 일시', '개선활동 수']];
+    per.forEach(function (x) { (x.plan.confirmed || []).forEach(function (c) { hist.push([x.s, 'v' + c.version, c.at.replace('T', ' ').slice(0, 16), c.rows.length]); }); });
+    sheets['확정 이력'] = hist; meta['확정 이력'] = { head: [0] };
+    return { sheets: sheets, meta: meta, weeks: weeks };
+  }
+  function reportSheets(ctx) { return reportBook(ctx).sheets; }
+  /* 엑셀 백업 = 불량 목록을 붙여넣기 양식 순서 그대로(다시 「엑셀 복원」·붙여넣기로 읽힘) */
+  function backupSheet(records) {
+    var aoa = [PASTE_ORDER.map(fieldLabel)];
+    records.forEach(function (r) { aoa.push([r.date, r.supplier, r.partNo, r.partName, r.typeManual || r.typeIn || '', r.problem, typeof r.qty === 'number' ? r.qty : '', r.action || '']); });
+    return aoa;
   }
 
   /* ── 11. 저장 형식 ─────────────────────────────────────────── */
-  var SCHEMA_VERSION = 1;
+  var SCHEMA_VERSION = 2;
+  /* 1단계(v1) 기본 사전 9종 → 수강생 8종. 사전 이름을 손대지 않은 채 저장된 경우에만 바꿔 줍니다 */
+  var V1_TYPES = { '이종 불량': '이종/누락', '용접 균열': '용접불량', '용접 불량': '용접불량', '가공 치수불량': '위치/치수', '도장 불량': '기타',
+    '외관 불량': '기타', '조립·체결 불량': '미조임', '누유·누수': '누유/누수', '녹·부식': '기타' };
+  function isV1Defaults(types) {
+    var names = (types || []).map(function (t) { return t && str(t.name); });
+    return names.length === 9 && names.every(function (n) { return V1_TYPES[n]; });
+  }
   function emptyDb() {
     return { schemaVersion: SCHEMA_VERSION, records: [], seq: 0, types: defaultTypes(), depts: DEFAULT_DEPTS.slice(), rules: cleanRules({}),
       plans: {}, aliases: { suppliers: {}, parts: {} }, mask: true, mapping: null, files: [] };
@@ -635,11 +770,15 @@
       var c = { id: str(r.id), date: parseDate(r.date), partName: str(r.partName), partNo: str(r.partNo), problem: str(r.problem), supplier: str(r.supplier) };
       if (typeof r.qty === 'number') c.qty = r.qty;
       if (str(r.typeManual)) c.typeManual = str(r.typeManual);
+      if (str(r.typeIn)) c.typeIn = str(r.typeIn);
+      if (str(r.action)) c.action = str(r.action);
       return c;
     });
     if (typeof o.seq === 'number') db.seq = o.seq;
     db.records.forEach(function (r) { if (!r.id) r.id = 'd' + (++db.seq); });
-    if (Array.isArray(o.types)) { var ts = o.types.map(cleanType).filter(Boolean); if (ts.length) db.types = ts; }
+    var v1 = Array.isArray(o.types) && !(o.schemaVersion >= 2) && isV1Defaults(o.types);
+    if (Array.isArray(o.types) && !v1) { var ts = o.types.map(cleanType).filter(Boolean); if (ts.length) db.types = ts; }
+    if (v1) db.records.forEach(function (r) { if (r.typeManual && V1_TYPES[r.typeManual]) r.typeManual = V1_TYPES[r.typeManual]; });
     if (Array.isArray(o.depts)) { var ds = uniq(o.depts.map(str).filter(Boolean)); if (ds.length) db.depts = ds; }
     db.rules = cleanRules(o.rules);
     if (o.plans && typeof o.plans === 'object') Object.keys(o.plans).forEach(function (s) {
@@ -647,6 +786,10 @@
       db.plans[s] = { baseDate: parseDate(p.baseDate), from: parseDate(p.from), to: parseDate(p.to), rows: Array.isArray(p.rows) ? p.rows.map(cleanPlanRow) : [],
         confirmed: Array.isArray(p.confirmed) ? p.confirmed.filter(function (c) { return c && Array.isArray(c.rows); }).map(function (c, i) { return { version: i + 1, at: str(c.at), rows: c.rows.map(cleanPlanRow) }; }) : [],
         aiSummary: str(p.aiSummary), aiChecks: Array.isArray(p.aiChecks) ? p.aiChecks.map(str).filter(Boolean) : [], aiAnswer: p.aiAnswer == null ? '' : String(p.aiAnswer) };
+    });
+    if (v1) Object.keys(db.plans).forEach(function (s) {
+      var p = db.plans[s];
+      [p.rows].concat(p.confirmed.map(function (c) { return c.rows; })).forEach(function (rs) { rs.forEach(function (r) { if (V1_TYPES[r.type]) r.type = V1_TYPES[r.type]; }); });
     });
     if (o.aliases && typeof o.aliases === 'object') db.aliases = { suppliers: assignAliases(o.aliases.suppliers, [], ALIAS.suppliers), parts: assignAliases(o.aliases.parts, [], ALIAS.parts) };
     db.mask = o.mask !== false;
@@ -661,9 +804,10 @@
     // 날짜
     parseDate: parseDate, toDateStr: toDateStr, addDays: addDays, daysBetween: daysBetween, mondayOf: mondayOf, monthOf: monthOf, monthAdd: monthAdd, weekInfo: weekInfo,
     // 읽기
-    FIELDS: FIELDS, detectColumns: detectColumns, parseSheet: parseSheet, pickSheet: pickSheet, recordKey: recordKey, mergeRecords: mergeRecords, normHead: normHead,
+    FIELDS: FIELDS, PASTE_ORDER: PASTE_ORDER, fieldLabel: fieldLabel, detectColumns: detectColumns, parseSheet: parseSheet, pickSheet: pickSheet, recordKey: recordKey, mergeRecords: mergeRecords, normHead: normHead,
+    splitTsv: splitTsv, parsePaste: parsePaste, checkRecordInput: checkRecordInput, recordFromInput: recordFromInput,
     // 분류
-    UNCLASSIFIED: UNCLASSIFIED, DEFAULT_DEPTS: DEFAULT_DEPTS, defaultTypes: defaultTypes, classify: classify, typeOf: typeOf, enrich: enrich, typeNames: typeNames,
+    UNCLASSIFIED: UNCLASSIFIED, DEFAULT_DEPTS: DEFAULT_DEPTS, defaultTypes: defaultTypes, classify: classify, typeOf: typeOf, enrich: enrich, typeNames: typeNames, findTypeName: findTypeName,
     parseActionLines: parseActionLines, formatActionLines: formatActionLines, parseKeywords: parseKeywords,
     // 분석
     DEFAULT_RULES: DEFAULT_RULES, cleanRules: cleanRules, analyze: analyze, findIssues: findIssues, dateBounds: dateBounds, suppliersOf: suppliersOf,
@@ -675,6 +819,6 @@
     ALIAS: ALIAS, assignAliases: assignAliases, updateAliases: updateAliases, maskText: maskText, unmaskText: unmaskText, findLeaks: findLeaks,
     buildAiPromptInfo: buildAiPromptInfo, parseAiPlan: parseAiPlan, matchType: matchType,
     // 보고서·저장
-    reportSheets: reportSheets, emptyDb: emptyDb, restoreDb: restoreDb, SCHEMA_VERSION: SCHEMA_VERSION
+    reportSheets: reportSheets, reportBook: reportBook, backupSheet: backupSheet, REPORT_TITLE: REPORT_TITLE, emptyDb: emptyDb, restoreDb: restoreDb, SCHEMA_VERSION: SCHEMA_VERSION
   };
 });

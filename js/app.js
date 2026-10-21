@@ -1,4 +1,4 @@
-/* Quality Planner — 화면 (대시보드 · RAW DATA 업로드 · 불량 분석 · MASTER PLAN · 추진현황 · 보고서 출력 · 설정)
+/* Quality Planner — 화면 (대시보드 · 불량 등록 · 파일 업로드(선택) · 불량 분석 · MASTER PLAN · 추진현황 · 보고서 출력 · 설정)
    계산은 js/logic.js, 저장은 js/store.js, AI 연결은 js/ai-endpoint.js · js/ai-panel.js 에 있습니다. */
 (function () {
   'use strict';
@@ -6,6 +6,7 @@
   var S = window.SQStore;
   var Sample = window.SQSample;
   var XLSX = window.XLSX;
+  var XO = window.SQXlsx;
   var PAGE = 50;
   var COLOR = { done: '#1f9d55', open: '#e8830c', hold: '#8e44ad' };
 
@@ -15,6 +16,7 @@
     plan: { supplier: '', scale: 'week', aiText: '', parsed: null, mode: 'replace', showPrompt: false },
     prog: { supplier: '', status: '', overdue: false, scale: 'month' },
     rep: { supplier: '' },
+    entry: { editId: '', keep: { date: '', supplier: '' }, paste: '', pasted: null, supplier: '', type: '', q: '', page: 0 },
     imp: null,
     impMode: 'add'
   };
@@ -92,18 +94,12 @@
     document.body.appendChild(a); a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
-  function writeXlsx(name, sheets, widths) {
-    var wb = XLSX.utils.book_new();
-    Object.keys(sheets).forEach(function (n) {
-      var ws = XLSX.utils.aoa_to_sheet(sheets[n]);
-      var w = (widths && widths[n]) || [];
-      var cols = 0; sheets[n].forEach(function (r) { cols = Math.max(cols, r.length); });
-      ws['!cols'] = Array.from({ length: cols }, function (_, i) { return { wch: w[i] || 14 }; });
-      XLSX.utils.book_append_sheet(wb, ws, n.replace(/[\\\/?*\[\]:]/g, '-').slice(0, 31));
-    });
-    var out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  /* 엑셀 쓰기 — js/xlsx-out.js 가 머리글 굵게·칸 색·날짜 형식·열 폭·틀 고정을 붙입니다(외부 서버 없이) */
+  function writeXlsx(name, sheets, meta) {
+    var out = XO.build(XLSX, sheets, meta || {});
     download(name, new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
   }
+  function listMeta(aoa, widths) { return { head: [0], freeze: { rows: 1 }, filter: 'A1:' + XO.colName(Math.max(0, (aoa[0] || []).length - 1)) + Math.max(1, aoa.length), widths: widths }; }
   function copyText(s) {
     function fallback() {
       var ta = h('textarea', { style: 'position:fixed;left:-9999px;top:0' });
@@ -125,8 +121,8 @@
   function emptyNotice(main, title) {
     main.appendChild(pageHead(title));
     main.appendChild(h('section', { class: 'card' },
-      h('p', null, '아직 공정불량 Raw data 가 없습니다. 「RAW DATA 업로드」에서 Excel 을 올리거나, 예시 데이터로 흐름을 먼저 볼 수 있습니다.'),
-      h('div', { class: 'btn-row' }, h('a', { class: 'btn btn-primary', href: '#/upload' }, 'RAW DATA 업로드로'), sampleButton(false))));
+      h('p', null, '아직 공정불량 데이터가 없습니다. 「불량 등록」에서 한 건씩 적거나 엑셀 표를 복사해 붙여 넣으세요. 예시 데이터로 흐름을 먼저 볼 수도 있습니다.'),
+      h('div', { class: 'btn-row' }, h('a', { class: 'btn btn-primary', href: '#/entry' }, '불량 등록으로'), sampleButton(false))));
   }
   function pageHead(title, sub, right) {
     return h('div', { class: 'page-head' }, h('div', { class: 'ph-text' }, h('h1', null, title), sub ? h('p', { class: 'note' }, sub) : null), right || null);
@@ -216,7 +212,8 @@
     document.getElementById('sampleBanner').hidden = !db._sample;
     if (!S.available()) document.getElementById('storeBanner').hidden = false;
     document.body.setAttribute('data-route', r);
-    if (r === 'upload') renderUpload(main);
+    if (r === 'entry') renderEntry(main);
+    else if (r === 'upload') renderUpload(main);
     else if (r === 'analysis') renderAnalysis(main);
     else if (r === 'plan') renderPlan(main);
     else if (r === 'progress') renderProgress(main);
@@ -292,9 +289,9 @@
       b.min ? h('span', { class: 'hero-chip' }, icon('cal'), b.min + ' ~ ' + b.max) : null));
     if (!rows.length) {
       main.appendChild(h('section', { class: 'dp dash-empty' },
-        h('h2', null, '아직 공정불량 Raw data 가 없습니다'),
-        h('p', null, '발생일자·품명·품번·문제점·협력사 열이 있는 Excel 을 올리면 이 화면의 지표·차트가 채워집니다. 실제 파일이 아직 없으면 예시 데이터(가상)로 흐름을 볼 수 있습니다.'),
-        h('div', { class: 'btn-row' }, h('a', { class: 'btn btn-primary', href: '#/upload' }, 'RAW DATA 업로드'), sampleButton(false))));
+        h('h2', null, '아직 공정불량 데이터가 없습니다'),
+        h('p', null, '「불량 등록」에서 협력사·품번·발생일·불량유형·내용·수량·조치를 바로 적거나, 엑셀에서 표를 복사해 붙여 넣으면 이 화면의 지표·차트가 채워집니다. 먼저 예시 데이터(가상)로 흐름을 볼 수도 있습니다.'),
+        h('div', { class: 'btn-row' }, h('a', { class: 'btn btn-primary', href: '#/entry' }, '불량 등록'), sampleButton(false))));
       main.appendChild(flowGuide());
       return;
     }
@@ -349,18 +346,242 @@
   }
   function flowGuide() {
     var steps = [
-      ['#/upload', 'RAW DATA 업로드', 'Excel 을 올리면 열을 자동으로 맞춥니다'],
-      ['#/analysis', '불량 분석', '문제점 글로 불량유형을 나누고 개선 필요 항목을 찾습니다'],
-      ['#/plan', 'MASTER PLAN', '유형별 개선대책 초안 → AI 로 구체화 → 간트로 계획 확정'],
+      ['#/entry', '불량 등록', '화면에서 바로 적거나 엑셀 표를 복사해 붙여 넣습니다'],
+      ['#/analysis', '불량 분석', '불량유형 8종별·협력사별로 모아 개선 필요 항목을 찾습니다'],
+      ['#/plan', 'MASTER PLAN', '유형별 기본 대책으로 초안 → 직접 다듬기 → 간트로 계획 확정'],
       ['#/progress', '추진현황', '담당자가 실적과 완료·미완료·보류 상태를 적습니다'],
-      ['#/report', '보고서 출력', '확정한 Master Plan 을 Excel 보고서로 내보냅니다']
+      ['#/report', '보고서 출력', '화면의 표·Master Plan·간트를 그대로 Excel 로 내보냅니다']
     ];
     return panel('일하는 순서', null, h('ol', { class: 'flow' }, steps.map(function (s, i) {
       return h('li', null, h('a', { href: s[0] }, h('span', { class: 'flow-n' }, String(i + 1)), h('span', { class: 'flow-t' }, h('strong', null, s[1]), h('span', null, s[2])), icon('chev', 'q-chev')));
     })), 'flow-panel');
   }
 
-  // ══ RAW DATA 업로드 ═══════════════════════════════════════
+  // ══ 불량 등록 (기본 경로 — 파일 없이 화면에서 바로 입력 · 엑셀 붙여넣기) ══════════
+  function typeOptions(withAuto) {
+    return (withAuto ? [['', '(비워 두면 내용 키워드로 자동 분류)']] : []).concat(L.typeNames(db.types).map(function (n) { return [n, n]; }));
+  }
+  /* 예시 데이터가 들어 있으면 먼저 비우고 새로 시작합니다(사전·규칙·AI 설정은 남김) */
+  function leaveSample(then) {
+    if (!db._sample) { then(); return; }
+    confirmBox('예시 데이터 비우기', '지금 들어 있는 것은 예시 데이터(가상)입니다.\n예시 데이터와 그 Master Plan 을 지우고, 입력한 내용으로 새로 시작합니다.', '비우고 시작', function () {
+      var keep = { types: db.types, depts: db.depts, rules: db.rules, mask: db.mask, mapping: db.mapping };
+      db = L.emptyDb(); Object.assign(db, keep);
+      then();
+    });
+  }
+  function renderEntry(main) {
+    var st = ui.entry;
+    main.appendChild(pageHead('불량 등록', '협력사 공정불량을 이 화면에서 바로 적거나, 엑셀에서 표를 복사해 붙여 넣습니다. 입력한 내용은 이 브라우저에만 저장되고 서버로 보내지 않습니다.'));
+    if (db._sample) main.appendChild(h('p', { class: 'alert info' }, '지금은 예시 데이터(가상)가 들어 있습니다. 첫 건을 등록하거나 붙여 넣으면 예시 데이터를 비우고 새로 시작합니다.'));
+    main.appendChild(entryForm());
+    main.appendChild(pasteCard());
+    main.appendChild(entryList());
+    main.appendChild(backupCard());
+  }
+  function entryForm() {
+    var st = ui.entry;
+    var orig = st.editId ? db.records.filter(function (r) { return r.id === st.editId; })[0] : null;
+    if (st.editId && !orig) st.editId = '';
+    var v = orig ? { date: orig.date, supplier: orig.supplier, partNo: orig.partNo, partName: orig.partName, type: orig.typeManual || '', problem: orig.problem, qty: orig.qty == null ? '' : String(orig.qty), action: orig.action || '' }
+      : { date: st.keep.date || today(), supplier: st.keep.supplier || '', partNo: '', partName: '', type: '', problem: '', qty: '', action: '' };
+    var date = dateInput(v.date, { required: true, 'aria-required': 'true' });
+    var sup = h('input', { value: v.supplier, list: 'dl-sup', placeholder: '예: 협력사 A', 'aria-required': 'true', autocomplete: 'off' });
+    var pn = h('input', { value: v.partNo, placeholder: '예: TP-0001', autocomplete: 'off' });
+    var pname = h('input', { value: v.partName, placeholder: '예: 브래킷', autocomplete: 'off' });
+    var type = select(typeOptions(true), v.type, { 'aria-label': '불량유형' });
+    var qty = h('input', { type: 'number', min: '0', step: 'any', value: v.qty, inputmode: 'decimal' });
+    var prob = h('textarea', { rows: '2', placeholder: '예: 브래킷 용접부 균열 발생', 'aria-required': 'true' }); prob.value = v.problem;
+    var act = h('textarea', { rows: '2', placeholder: '예: 전수 선별 후 재작업, 협력사 반품' }); act.value = v.action;
+    var hint = h('small', { class: 'hint' });
+    function showAuto() {
+      if (type.value) { hint.textContent = ''; return; }
+      var c = L.classify(prob.value, db.types);
+      hint.textContent = prob.value.trim() ? '자동 분류: ' + c.type + (c.hits.length ? ' (키워드 ' + c.hits.join(', ') + ')' : ' — 맞는 키워드가 없어 유형을 골라 주세요') : '';
+    }
+    prob.addEventListener('input', showAuto); type.addEventListener('change', showAuto); showAuto();
+    var errBox = h('div', { 'aria-live': 'polite' });
+    function submit(e) {
+      e.preventDefault();
+      var o = { date: date.value, supplier: sup.value, partNo: pn.value, partName: pname.value, type: type.value, problem: prob.value, qty: qty.value, action: act.value };
+      var errs = L.checkRecordInput(o, db.types);
+      errBox.textContent = '';
+      if (errs.length) { errs.forEach(function (x) { errBox.appendChild(h('p', { class: 'alert warn' }, x)); }); return; }
+      var rec = L.recordFromInput(o);
+      if (orig) {
+        ['date', 'supplier', 'partNo', 'partName', 'problem'].forEach(function (k) { orig[k] = rec[k]; });
+        ['qty', 'typeManual', 'action'].forEach(function (k) { if (rec[k] == null) delete orig[k]; else orig[k] = rec[k]; });
+        delete orig.typeIn;
+        db.aliases = L.updateAliases(db.aliases, db.records);
+        st.editId = ''; save(); render(); toast('수정했습니다.');
+        return;
+      }
+      leaveSample(function () {
+        var same = db.records.filter(function (r) { return L.recordKey(r) === L.recordKey(rec); }).length;
+        rec.id = 'd' + (++db.seq);
+        db.records.push(rec);
+        db.aliases = L.updateAliases(db.aliases, db.records);
+        db.files.push({ name: '직접 입력', at: nowIso(), added: 1, dup: 0 });
+        if (db.files.length > 50) db.files = db.files.slice(-50);
+        st.keep = { date: rec.date, supplier: rec.supplier };
+        save(); render();
+        toast('등록했습니다 (' + rec.supplier + ' · ' + L.typeOf(rec, db.types).type + ').' + (same ? ' 같은 날 같은 내용이 이미 ' + same + '건 있습니다.' : ''));
+        var f = document.querySelector('#entryForm input[list="dl-sup"]'); if (f) f.focus();
+      });
+    }
+    return h('section', { class: 'card', id: 'entryCard' },
+      h('div', { class: 'card-head' }, h('h2', null, orig ? '불량 수정' : '1. 한 건씩 등록'), orig ? h('span', { class: 'badge warn' }, '수정 중') : null),
+      h('form', { id: 'entryForm', onsubmit: submit, novalidate: true },
+        datalist('dl-sup', suppliers()),
+        h('div', { class: 'form-grid three' },
+          field('발생일자 *', date), field('협력사 *', sup, '이미 적은 협력사는 목록에서 고릅니다'), field('불량유형', type),
+          field('품번', pn), field('품명', pname), field('수량', qty)),
+        field('내용(문제점) *', prob), hint,
+        field('조치', act, '임시 조치·처리 결과(선별·재작업·반품 등). 개선대책은 MASTER PLAN 에서 세웁니다.'),
+        errBox,
+        h('div', { class: 'btn-row' },
+          h('button', { type: 'submit', class: 'btn btn-primary' }, orig ? '수정 저장' : '등록'),
+          orig ? h('button', { type: 'button', class: 'btn', onclick: function () { st.editId = ''; render(); } }, '수정 그만두기') : null,
+          h('span', { class: 'note' }, '* 표시는 꼭 적어 주세요. 등록하면 발생일자·협력사는 다음 건을 위해 남겨 둡니다.'))));
+  }
+  function pasteCard() {
+    var st = ui.entry;
+    var ta = h('textarea', { rows: '6', class: 'mono paste-box', 'aria-label': '엑셀에서 복사한 표', placeholder: '엑셀에서 표를 골라 Ctrl+C(맥은 ⌘+C) → 이 칸을 누르고 Ctrl+V' });
+    ta.value = st.paste;
+    ta.addEventListener('input', function () { st.paste = ta.value; });
+    function read() {
+      st.paste = ta.value;
+      var p = L.parsePaste(ta.value);
+      st.pasted = p; render();
+      if (!p.records.length) toast('읽은 줄이 없습니다. 발생일자·협력사·내용 칸이 있는지 확인해 주세요.', true);
+    }
+    var p = st.pasted, preview = null;
+    if (p) {
+      var en = L.enrich(p.records, db.types);
+      preview = h('div', { class: 'ai-preview' },
+        h('h3', null, '읽은 결과 — ' + p.records.length + '건'),
+        h('p', { class: 'note' }, (p.header ? '첫 줄의 열 이름으로 칸을 맞췄습니다.' : '열 이름 줄이 없어 「' + L.PASTE_ORDER.map(L.fieldLabel).join(' · ') + '」 순서로 읽었습니다.') +
+          (p.skipped ? ' 협력사·내용이 비어 건너뛴 줄 ' + p.skipped + '건.' : '') + (p.badDate ? ' 날짜를 못 읽은 줄 ' + p.badDate + '건(날짜 없이 넣음).' : '')),
+        p.records.length ? rawTable(p.records.slice(0, 8)) : null,
+        p.records.length > 8 ? h('p', { class: 'note' }, '…외 ' + (p.records.length - 8) + '건') : null,
+        en.some(function (r) { return r.type === L.UNCLASSIFIED; }) ? h('p', { class: 'alert warn' }, '유형을 정하지 못한 줄이 ' + en.filter(function (r) { return r.type === L.UNCLASSIFIED; }).length + '건 있습니다. 넣은 뒤 「불량 분석」의 분류 결과에서 고를 수 있습니다.') : null,
+        p.records.length ? h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn btn-primary', onclick: function () { addPasted(p.records); } }, p.records.length + '건 넣기 (같은 줄은 건너뜀)')) : null);
+    }
+    return h('section', { class: 'card' },
+      h('h2', null, '2. 엑셀에서 붙여넣기'),
+      h('p', { class: 'note' }, '파일을 올리지 않아도 됩니다. 엑셀에서 표 범위를 복사해 아래 칸에 붙여 넣으세요. 첫 줄에 열 이름(발생일자·협력사·품번·내용 등)이 있으면 그 이름으로 맞추고, 없으면 「' + L.PASTE_ORDER.map(L.fieldLabel).join(' · ') + '」 순서로 읽습니다. 불량유형 칸이 비어 있으면 내용 키워드로 나눕니다.'),
+      ta,
+      h('div', { class: 'btn-row', style: 'margin-top:10px' },
+        h('button', { type: 'button', class: 'btn btn-primary', onclick: read }, '표 읽기'),
+        p ? h('button', { type: 'button', class: 'btn', onclick: function () { st.paste = ''; st.pasted = null; render(); } }, '비우기') : null,
+        templateButton()),
+      preview);
+  }
+  function addPasted(recs) {
+    leaveSample(function () {
+      var m = L.mergeRecords(db.records, recs, db.seq);
+      db.records = m.records; db.seq = m.seq;
+      db.aliases = L.updateAliases(db.aliases, db.records);
+      db.files.push({ name: '붙여넣기', at: nowIso(), added: m.added, dup: m.dup });
+      ui.entry.paste = ''; ui.entry.pasted = null;
+      save(); render();
+      toast('새로 ' + m.added + '건을 넣었습니다' + (m.dup ? ' (같은 줄 ' + m.dup + '건 건너뜀)' : '') + '.');
+    });
+  }
+  function entryList() {
+    var st = ui.entry;
+    var rows = all();
+    var card = h('section', { class: 'card' });
+    if (!rows.length) { add(card, [h('h2', null, '3. 등록된 불량'), h('p', { class: 'note' }, '아직 없습니다.')]); return card; }
+    var sups = suppliers();
+    if (st.supplier && sups.indexOf(st.supplier) < 0) st.supplier = '';
+    var sup = select([['', '전체 협력사']].concat(sups.map(function (x) { return [x, x]; })), st.supplier, { 'aria-label': '협력사' });
+    sup.addEventListener('change', function () { st.supplier = sup.value; st.page = 0; render(); });
+    var ts = select([['', '전체 유형']].concat(L.typeNames(db.types).concat([L.UNCLASSIFIED]).map(function (n) { return [n, n]; })), st.type, { 'aria-label': '불량유형' });
+    ts.addEventListener('change', function () { st.type = ts.value; st.page = 0; render(); });
+    var q = h('input', { type: 'search', value: st.q, placeholder: '품번·내용·조치 찾기', 'aria-label': '찾기' });
+    q.addEventListener('change', function () { st.q = q.value.trim(); st.page = 0; render(); });
+    var shown = rows.filter(function (r) {
+      if (st.supplier && r.supplier !== st.supplier) return false;
+      if (st.type && r.type !== st.type) return false;
+      if (st.q) { var k = st.q.toLowerCase(); if ((r.partNo + ' ' + r.partName + ' ' + r.problem + ' ' + (r.action || '')).toLowerCase().indexOf(k) < 0) return false; }
+      return true;
+    }).sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : (+b.id.slice(1) || 0) - (+a.id.slice(1) || 0); });
+    var pages = Math.max(1, Math.ceil(shown.length / PAGE));
+    if (st.page >= pages) st.page = pages - 1;
+    var tb = h('tbody');
+    shown.slice(st.page * PAGE, (st.page + 1) * PAGE).forEach(function (r) {
+      tb.appendChild(h('tr', { class: (r.type === L.UNCLASSIFIED ? 'row-warn' : '') + (r.id === st.editId ? ' row-edit' : '') },
+        h('td', { class: 'nw' }, r.date || '(날짜 없음)'), h('td', { class: 'nw' }, r.supplier), h('td', { class: 'nw' }, r.partNo), h('td', null, r.partName),
+        h('td', { class: 'nw' }, r.type), h('td', { class: 'wide' }, r.problem), h('td', { class: 'num' }, r.qty == null ? '' : fmt(r.qty)), h('td', null, r.action || ''),
+        h('td', { class: 'nw' },
+          h('button', { type: 'button', class: 'btn btn-sm2', onclick: function () { st.editId = r.id; render(); var c = document.getElementById('entryCard'); if (c) c.scrollIntoView({ block: 'start' }); } }, '수정'), ' ',
+          h('button', { type: 'button', class: 'btn btn-sm2 btn-danger', onclick: function () {
+            confirmBox('불량 지우기', r.date + ' · ' + r.supplier + ' · ' + r.problem + '\n이 한 건을 지웁니다.', '지우기', function () {
+              db.records = db.records.filter(function (x) { return x.id !== r.id; });
+              if (st.editId === r.id) st.editId = '';
+              save(); render(); toast('지웠습니다.');
+            }, true);
+          } }, '지우기'))));
+    });
+    add(card, [
+      h('div', { class: 'card-head' }, h('h2', null, '3. 등록된 불량 ' + rows.length + '건'), h('a', { class: 'dp-more', href: '#/analysis' }, '불량 분석', icon('chev'))),
+      h('div', { class: 'filters' }, field('협력사', sup), field('불량유형', ts), field('찾기', q)),
+      h('div', { class: 'table-wrap', style: 'margin-top:12px' }, h('table', { class: 'list' },
+        h('thead', null, h('tr', null, ['발생일자', '협력사', '품번', '품명', '불량유형', '내용', '수량', '조치', ''].map(function (t) { return h('th', null, t); }))), tb)),
+      pager(st, pages, shown.length)
+    ]);
+    return card;
+  }
+  /* 백업·복원 — JSON(전부: 데이터·사전·Master Plan·확정 이력) · 엑셀(불량 목록) */
+  function backupCard() {
+    var json = h('input', { type: 'file', accept: '.json,application/json', onchange: function (e) {
+      var f = e.target.files[0]; e.target.value = '';
+      if (!f) return;
+      f.text().then(function (t) {
+        var o = JSON.parse(t), d = L.restoreDb(o && o.db ? o.db : o);
+        confirmBox('JSON 백업 되살리기', f.name + ' — 불량 ' + d.records.length + '건, Master Plan ' + Object.keys(d.plans).length + '곳.\n지금 데이터를 이 백업으로 바꿉니다.', '되살리기', function () { db = d; save(); toast('되살렸습니다.'); render(); }, true);
+      }).catch(function () { toast('JSON 백업 파일을 읽지 못했습니다.', true); });
+    } });
+    var xl = h('input', { type: 'file', accept: '.xlsx,.xls,.csv', onchange: function (e) {
+      var f = e.target.files[0]; e.target.value = '';
+      if (!f) return;
+      readOne(f).then(function (st) {
+        if (st.error) { toast(st.error, true); return; }
+        var p = parsedOf(st);
+        if (!p || p.r.det.missing.length || !p.r.records.length) { toast('불량 목록을 찾지 못했습니다. 발생일자·협력사·내용 열이 있는지 확인하거나 「파일 업로드」에서 열을 직접 골라 주세요.', true); return; }
+        var recs = p.r.records;
+        function apply(replace) {
+          closeDialog();
+          leaveSample(function () {
+            if (replace) { db.records = []; db.seq = 0; }
+            var m = L.mergeRecords(db.records, recs, db.seq);
+            db.records = m.records; db.seq = m.seq;
+            db.aliases = L.updateAliases(db.aliases, db.records);
+            db.files.push({ name: f.name + ' (엑셀 복원)', at: nowIso(), added: m.added, dup: m.dup });
+            save(); render(); toast('엑셀에서 ' + m.added + '건을 읽었습니다' + (m.dup ? ' (같은 줄 ' + m.dup + '건 건너뜀)' : '') + '.');
+          });
+        }
+        openDialog('엑셀에서 복원', h('p', { class: 'pre' }, f.name + ' — 불량 ' + recs.length + '건을 읽었습니다.\n지금 데이터(' + db.records.length + '건)에 더할까요, 지우고 바꿀까요? Master Plan 은 그대로 남습니다.'), [
+          h('button', { type: 'button', class: 'btn', onclick: closeDialog }, '그만두기'),
+          h('button', { type: 'button', class: 'btn btn-danger', onclick: function () { apply(true); } }, '지우고 바꾸기'),
+          h('button', { type: 'button', class: 'btn btn-primary', onclick: function () { apply(false); } }, '더하기')
+        ]);
+      });
+    } });
+    return h('section', { class: 'card', id: 'backupCard' }, h('h2', null, '백업 · 복원'),
+      h('p', { class: 'note' }, '데이터는 이 브라우저 안에만 있습니다. 브라우저 기록을 지우거나 PC 를 바꾸기 전에 백업을 받아 두세요. JSON 은 불량·사전·Master Plan·확정 이력까지 전부, 엑셀은 불량 목록만(다른 사람에게 보내거나 엑셀에서 고친 뒤 다시 읽을 때) 담습니다. AI 키는 넣지 않습니다.'),
+      h('div', { class: 'btn-row' },
+        h('button', { type: 'button', class: 'btn btn-primary', onclick: function () {
+          download('data10-07_백업' + tag() + '_' + today() + '.json', new Blob([JSON.stringify({ app: 'data10-07', at: nowIso(), db: db }, null, 1)], { type: 'application/json' }));
+        } }, 'JSON 백업 받기'),
+        h('label', { class: 'btn file-btn' }, 'JSON 되살리기', json),
+        h('button', { type: 'button', class: 'btn', disabled: !db.records.length, onclick: exportBackupXlsx }, '엑셀 백업 받기'),
+        h('label', { class: 'btn file-btn' }, '엑셀에서 복원', xl),
+        db.records.length ? h('button', { type: 'button', class: 'btn btn-danger', onclick: clearAll }, '데이터 전부 지우기') : null));
+  }
+
+  // ══ 파일 업로드 (선택) ═══════════════════════════════════════
   function decodeCsv(buf) {
     var u8 = new Uint8Array(buf), t;
     try { t = new TextDecoder('utf-8', { fatal: true }).decode(u8); }
@@ -392,11 +613,13 @@
   }
   function templateButton() {
     return h('button', { type: 'button', class: 'btn', onclick: function () {
-      writeXlsx('공정불량_RawData_양식.xlsx', { 'RAW': [['발생일자', '품명', '품번', '문제점', '협력사', '수량'], ['2026-10-05', '(예) 브래킷', '(예) TP-0001', '(예) 용접부 균열 발생', '(예) 협력사 A', 1]] }, { 'RAW': [12, 14, 14, 36, 14, 8] });
-    } }, '빈 양식 받기');
+      var aoa = [L.PASTE_ORDER.map(L.fieldLabel), ['2026-10-05', '(예) 협력사 A', '(예) TP-0001', '(예) 브래킷', '용접불량', '(예) 용접부 균열 발생', 1, '(예) 재작업 후 재입고']];
+      writeXlsx('공정불량_입력양식.xlsx', { '불량 목록': aoa, '불량유형': [['불량유형 (이 이름 그대로 적어 주세요)']].concat(L.typeNames(db.types).map(function (n) { return [n]; })) },
+        { '불량 목록': listMeta(aoa, [12, 14, 14, 14, 12, 40, 8, 30]), '불량유형': { head: [0] } });
+    } }, '입력 양식 받기(.xlsx)');
   }
   function renderUpload(main) {
-    main.appendChild(pageHead('RAW DATA 업로드', '협력사 공정불량 Excel(또는 CSV)을 올립니다. 파일은 서버로 보내지 않고 이 브라우저에서만 읽습니다.'));
+    main.appendChild(pageHead('파일 업로드 (선택)', '이미 Excel·CSV 파일로 정리된 공정불량이 있을 때만 씁니다. 파일이 없으면 「불량 등록」에서 바로 적거나 붙여 넣으면 됩니다. 파일은 서버로 보내지 않고 이 브라우저에서만 읽습니다.'));
     var input = h('input', { type: 'file', accept: '.xlsx,.xls,.csv', multiple: true, onchange: function (e) { readFiles(e.target.files); e.target.value = ''; } });
     var drop = h('label', { class: 'drop' }, icon('down', 'drop-ico'), h('strong', null, 'Excel 파일 고르기'), h('span', { class: 'note' }, '.xlsx · .xls · .csv — 여러 개를 함께 골라도 됩니다(여기로 끌어 놓아도 됨)'), input);
     drop.addEventListener('dragover', function (e) { e.preventDefault(); drop.classList.add('over'); });
@@ -404,7 +627,7 @@
     drop.addEventListener('drop', function (e) { e.preventDefault(); drop.classList.remove('over'); readFiles(e.dataTransfer.files); });
     main.appendChild(h('section', { class: 'card' },
       h('h2', null, '1. 파일 올리기'),
-      h('p', null, '필요한 열: ', h('strong', null, '발생일자 · 품명 · 품번 · 문제점 · 협력사'), ' (수량은 있으면 함께 읽습니다). 열 이름이 조금 달라도(업체명·불량내용·P/N 등) 자동으로 찾고, 위에 제목 줄이 있어도 머리행을 찾아 읽습니다.'),
+      h('p', null, '꼭 필요한 열: ', h('strong', null, '발생일자 · 협력사 · 내용(문제점)'), ' — 품번·품명·불량유형·수량·조치는 있으면 함께 읽습니다. 열 이름이 조금 달라도(업체명·불량내용·P/N·조치사항 등) 자동으로 찾고, 위에 제목 줄이 있어도 머리행을 찾아 읽습니다.'),
       drop,
       h('div', { class: 'btn-row', style: 'margin-top:12px' }, templateButton(), sampleButton(false)),
       h('p', { class: 'note', style: 'margin-top:10px' }, '시험용 가상 파일: 리포의 samples/예시_협력사_공정불량_RawData.xlsx')));
@@ -427,7 +650,7 @@
       cur.appendChild(h('h3', { style: 'margin-top:14px' }, '최근 8건'));
       cur.appendChild(rawTable(recent));
       cur.appendChild(h('div', { class: 'btn-row', style: 'margin-top:12px' },
-        h('button', { type: 'button', class: 'btn', onclick: exportRaw }, 'Raw data Excel 로 내보내기 (불량유형 포함)'),
+        h('button', { type: 'button', class: 'btn', onclick: exportBackupXlsx }, '엑셀 백업 받기'),
         h('a', { class: 'btn btn-primary', href: '#/analysis' }, '불량 분석으로'),
         h('button', { type: 'button', class: 'btn btn-danger', onclick: clearAll }, '전부 지우기')));
     }
@@ -435,8 +658,12 @@
   }
   function rawTable(rows) {
     return h('div', { class: 'table-wrap' }, h('table', { class: 'list' },
-      h('thead', null, h('tr', null, ['발생일자', '협력사', '품번', '품명', '문제점'].map(function (t) { return h('th', null, t); }))),
-      h('tbody', null, rows.map(function (r) { return h('tr', null, h('td', { class: 'nw' }, r.date || '(날짜 없음)'), h('td', { class: 'nw' }, r.supplier), h('td', { class: 'nw' }, r.partNo), h('td', null, r.partName), h('td', { class: 'wide' }, r.problem)); }))));
+      h('thead', null, h('tr', null, ['발생일자', '협력사', '품번', '품명', '불량유형', '내용', '수량', '조치'].map(function (t) { return h('th', null, t); }))),
+      h('tbody', null, rows.map(function (r) {
+        var t = L.typeOf(r, db.types).type;
+        return h('tr', { class: t === L.UNCLASSIFIED ? 'row-warn' : '' }, h('td', { class: 'nw' }, r.date || '(날짜 없음)'), h('td', { class: 'nw' }, r.supplier), h('td', { class: 'nw' }, r.partNo), h('td', null, r.partName),
+          h('td', { class: 'nw' }, t), h('td', { class: 'wide' }, r.problem), h('td', { class: 'num' }, r.qty == null ? '' : fmt(r.qty)), h('td', null, r.action || ''));
+      }))));
   }
   function importCard() {
     var card = h('section', { class: 'card import' }, h('h2', null, '2. 열 연결 확인'));
@@ -512,11 +739,14 @@
     toast('새로 ' + m.added + '건을 넣었습니다' + (m.dup ? ' (같은 행 ' + m.dup + '건 건너뜀)' : '') + '.');
     location.hash = '#/analysis';
   }
-  function exportRaw() {
-    var rows = all();
-    var aoa = [['발생일자', '품명', '품번', '문제점', '협력사', '수량', '불량유형', '분류 근거']];
-    rows.forEach(function (r) { aoa.push([r.date, r.partName, r.partNo, r.problem, r.supplier, r.qty == null ? '' : r.qty, r.type, r.manual ? '직접 지정' : r.hits.join(', ')]); });
-    writeXlsx('공정불량_RawData_분류' + tag() + '_' + today() + '.xlsx', { 'RAW': aoa }, { 'RAW': [12, 14, 14, 36, 14, 8, 14, 18] });
+  /* 엑셀 백업 — 붙여넣기·파일 복원으로 그대로 다시 읽히는 순서. 둘째 시트는 자동 분류 결과까지 */
+  function exportBackupXlsx() {
+    var aoa = L.backupSheet(db.records.slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; }));
+    var en = all(), cls = [['발생일자', '협력사', '품번', '불량유형(적용)', '분류 근거', '내용']];
+    en.forEach(function (r) { cls.push([r.date, r.supplier, r.partNo, r.type, r.manual ? '직접 지정' : r.column ? '불량유형 칸' : r.hits.join(', '), r.problem]); });
+    writeXlsx('공정불량_백업' + tag() + '_' + today() + '.xlsx', { '불량 목록': aoa, '분류 결과': cls },
+      { '불량 목록': listMeta(aoa, [12, 14, 14, 14, 12, 40, 8, 30]), '분류 결과': listMeta(cls, [12, 14, 14, 14, 18, 40]) });
+    toast('엑셀 백업을 내려받았습니다. 「불량 등록 → 백업·복원」에서 다시 읽을 수 있습니다.');
   }
   function clearAll() {
     confirmBox('전부 지우기', 'Raw data ' + db.records.length + '건과 모든 협력사의 Master Plan 을 지웁니다. 불량유형 사전·규칙·AI 설정은 남습니다.\n되돌릴 수 없으니 필요하면 먼저 설정에서 JSON 백업을 받아 두세요.', '지우기', function () {
@@ -627,7 +857,7 @@
       s.addEventListener('change', function () { if (!raw) return; if (s.value) raw.typeManual = s.value; else delete raw.typeManual; save(); render(); });
       tb.appendChild(h('tr', { class: r.type === L.UNCLASSIFIED ? 'row-warn' : '' },
         h('td', { class: 'nw' }, r.date), h('td', { class: 'nw' }, r.supplier), h('td', { class: 'nw' }, r.partNo), h('td', null, r.partName), h('td', { class: 'wide' }, r.problem),
-        h('td', null, s), h('td', { class: 'note' }, r.manual ? '직접 지정' : r.hits.join(', '))));
+        h('td', null, s), h('td', { class: 'note' }, r.manual ? '직접 지정' : r.column ? '불량유형 칸' : r.hits.join(', '))));
     });
     var kw = h('input', { placeholder: '예: 미첨부', 'aria-label': '더할 키워드' });
     var kwType = select(names, names[0], { 'aria-label': '키워드를 더할 유형' });
@@ -640,7 +870,7 @@
     } }, field('키워드', kw), field('유형', kwType), h('button', { type: 'submit', class: 'btn' }, '키워드 더하기'));
     return h('section', { class: 'card' },
       h('div', { class: 'card-head' }, h('h2', null, '분류 결과 ' + rows.length + '건'), h('a', { class: 'dp-more', href: '#/settings' }, '키워드 사전', icon('chev'))),
-      h('p', { class: 'note' }, '불량유형은 문제점 글에 든 키워드로 정합니다(근거 칸). 틀리면 그 행에서 유형을 직접 고르세요 — 직접 고른 값이 먼저입니다. 같은 낱말이 자주 나오면 키워드로 더하는 편이 낫습니다.'),
+      h('p', { class: 'note' }, '불량유형은 ① 등록할 때 고른 유형 ② 붙여 넣은 표의 불량유형 칸 ③ 내용에 든 키워드 순서로 정합니다(근거 칸). 틀리면 그 행에서 유형을 직접 고르세요 — 직접 고른 값이 먼저입니다. 같은 낱말이 자주 나오면 키워드로 더하는 편이 낫습니다.'),
       h('div', { class: 'filters' }, field('유형', tsel), field('찾기', q), h('label', { class: 'check' }, unc, '미분류만')),
       h('div', { class: 'table-wrap', style: 'margin-top:12px' }, h('table', { class: 'list' },
         h('thead', null, h('tr', null, ['발생일자', '협력사', '품번', '품명', '문제점', '불량유형', '근거'].map(function (t) { return h('th', null, t); }))), tb)),
@@ -688,7 +918,7 @@
       var an1 = L.analyze(all(), { supplier: s }, db.rules);
       main.appendChild(h('section', { class: 'card' }, h('h2', null, s + ' — 아직 Master Plan 이 없습니다'),
         h('p', null, '공정불량 ' + an1.total + '건 · 개선 필요 항목 ' + an1.issues.length + '건' + (an1.issues.length ? ' (' + an1.issues.map(function (i) { return i.type; }).join(', ') + ')' : '') + '.'),
-        h('p', { class: 'note' }, '「분석 및 초안 생성」을 누르면 개선 필요 항목의 불량유형마다 설정의 기본 대책으로 초안을 만듭니다(규칙에 걸린 항목이 없으면 건수 상위 3개 유형). 초안은 AI 로 구체화하고 직접 고친 뒤 「계획 확정」합니다.')));
+        h('p', { class: 'note' }, '「분석 및 초안 생성」을 누르면 개선 필요 항목의 불량유형마다 설정의 기본 대책으로 초안을 만듭니다(규칙에 걸린 항목이 없으면 건수 상위 3개 유형). AI 없이 규칙으로 만들고, 간트에서 행을 눌러 직접 고친 뒤 「계획 확정」합니다. 사내 허용 AI 가 있으면 다듬기에 쓸 수 있습니다(선택).')));
       return;
     }
     var an = planAnalysis(s, plan);
@@ -709,7 +939,7 @@
       actions: [
         h('button', { type: 'button', class: 'btn', onclick: function () { openDrawer(s, null); } }, icon('plus'), '개선활동 추가'),
         h('button', { type: 'button', class: 'btn btn-ok', onclick: function () { confirmPlanUi(s); } }, icon('tick'), '계획 확정'),
-        h('button', { type: 'button', class: 'btn', onclick: function () { reloadDraft(s); } }, icon('redo'), 'AI 초안 다시 불러오기'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { reloadDraft(s); } }, icon('redo'), '초안 다시 불러오기'),
         h('button', { type: 'button', class: 'btn btn-primary', onclick: function () { downloadReport([s]); } }, icon('down'), 'Excel 보고서(.xlsx) 다운로드')
       ]
     }));
@@ -725,7 +955,7 @@
       db.plans[s] = { baseDate: base, from: from, to: to, rows: rows, confirmed: old ? old.confirmed : [], aiSummary: '', aiChecks: [], aiAnswer: '' };
       ui.plan.parsed = null; ui.plan.aiText = '';
       save(); render();
-      toast(rows.length ? '초안 ' + rows.length + '건을 만들었습니다. 아래 AI 로 구체화하거나 행을 눌러 고치세요.' : '이 기간에는 초안을 만들 불량유형이 없습니다(미분류만 있음).', !rows.length);
+      toast(rows.length ? '초안 ' + rows.length + '건을 만들었습니다(기본 대책). 간트에서 행을 눌러 담당자·일정을 고치세요.' : '이 기간에는 초안을 만들 불량유형이 없습니다(미분류만 있음).', !rows.length);
     }
     var p = planOf(s);
     if (p && p.rows.length) confirmBox('초안 다시 만들기', '지금 계획 ' + p.rows.length + '건(실적을 적은 행 ' + p.rows.filter(function (r) { return r.actStart || r.status !== 'open'; }).length + '건 포함)을 지우고 새 초안을 만듭니다.\n확정 이력은 남습니다.', '다시 만들기', go, true);
@@ -734,7 +964,7 @@
   function reloadDraft(s) {
     var p = planOf(s);
     var fromAi = p && p.aiAnswer;
-    confirmBox('AI 초안 다시 불러오기', (fromAi ? '마지막으로 반영한 AI 답으로' : '설정의 기본 대책으로') + ' 초안을 다시 만듭니다.\n지금 계획 ' + p.rows.length + '건은 지워집니다(직접 추가한 행도 포함). 확정 이력은 남습니다.', '다시 불러오기', function () {
+    confirmBox('초안 다시 불러오기', (fromAi ? '마지막으로 반영한 AI 답으로' : '설정의 기본 대책으로') + ' 초안을 다시 만듭니다.\n지금 계획 ' + p.rows.length + '건은 지워집니다(직접 추가한 행도 포함). 확정 이력은 남습니다.', '다시 불러오기', function () {
       if (fromAi) {
         var r = L.parseAiPlan(p.aiAnswer, { types: db.types, aliases: db.aliases, supplier: s, baseDate: p.baseDate });
         p.rows = r.rows; p.aiSummary = r.summary; p.aiChecks = r.checks;
@@ -761,7 +991,7 @@
     var chips = (iss.length ? iss : an.byType.filter(function (t) { return t.type !== L.UNCLASSIFIED; }).slice(0, 3).map(function (t) { return { type: t.type, count: t.count, flags: {} }; }))
       .map(function (i) { return h('span', { class: 'chip' + (i.flags.trend ? ' up' : '') }, i.type, h('small', null, ' ' + i.count + '건' + (i.flags.trend ? ' · 증가' : ''))); });
     return h('section', { class: 'card ai-sum' },
-      h('div', { class: 'card-head' }, h('h2', null, icon('chip', 'ai-chip'), 'AI 불량 분석 요약')),
+      h('div', { class: 'card-head' }, h('h2', null, icon('chip', 'ai-chip'), '불량 분석 요약')),
       h('div', { class: 'chips' }, chips),
       h('p', null, plan.aiSummary ? h('span', null, plan.aiSummary, h('small', { class: 'note' }, ' — AI 답(검토 필요)')) : rule),
       plan.aiChecks && plan.aiChecks.length ? h('details', null, h('summary', null, 'AI 가 적은 확인 필요 ' + plan.aiChecks.length + '건'), h('ul', null, plan.aiChecks.map(function (c) { return h('li', null, c); }))) : null);
@@ -850,10 +1080,11 @@
           h('label', { class: 'check' }, h('input', { type: 'radio', name: 'aimode', checked: ui.plan.mode === 'append', onchange: function () { ui.plan.mode = 'append'; } }), '지금 계획에 더하기')) : null,
         p.rows.length ? h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn btn-primary', onclick: function () { applyAi(s, p, ans.value); } }, '계획에 반영')) : null);
     }
-    return h('section', { class: 'card ai-card', id: 'aiCard' },
-      h('div', { class: 'card-head' }, h('h2', null, icon('chip', 'ai-chip'), 'AI 로 개선대책 구체화')),
+    var openAi = ui.plan.aiOpen || !!ui.plan.parsed || !!ui.plan.aiText;
+    return h('details', { class: 'card ai-card', id: 'aiCard', open: openAi, ontoggle: function (e) { ui.plan.aiOpen = e.target.open; } },
+      h('summary', { class: 'card-head' }, h('h2', null, icon('chip', 'ai-chip'), 'AI 로 개선대책 다듬기 — 선택'), h('span', { class: 'note' }, '사내에서 쓰도록 허용된 AI 가 있을 때만 씁니다. 없으면 위 초안(기본 대책)을 직접 고쳐 쓰면 됩니다.')),
       h('ol', { class: 'steps' },
-        h('li', null, '아래 프롬프트를 복사해 회사가 허용한 AI(사내 AI 또는 ChatGPT 등)에 붙여 넣습니다. 프롬프트에는 이 도구가 계산한 사실만 들어 있습니다.'),
+        h('li', null, '아래 프롬프트를 복사해 사내에서 허용된 AI 에 붙여 넣습니다(외부 AI 에는 회사 규정이 허용할 때만). 프롬프트에는 이 도구가 계산한 사실만 들어 있습니다.'),
         h('li', null, 'AI 답 전체를 복사해 「AI 답」 칸에 붙여 넣고 「답 읽기」를 누릅니다.'),
         h('li', null, '읽은 결과를 확인하고 「계획에 반영」 → 간트에서 행을 눌러 담당자·일정을 다듬은 뒤 「계획 확정」합니다.')),
       h('label', { class: 'check' }, mask, '협력사 이름과 품번을 별칭(업체1, 품목1)으로 가리기 — 권장. 대응표는 이 브라우저에만 있고, AI 답의 별칭은 원래 이름으로 되돌립니다.'),
@@ -986,40 +1217,41 @@
   }
 
   // ══ 보고서 출력 ════════════════════════════════════════════
+  function reportCtx(list) { return { suppliers: list, records: all(), plans: db.plans, rules: db.rules, today: today(), types: db.types }; }
   function downloadReport(list) {
-    var sheets = L.reportSheets({ suppliers: list, records: all(), plans: db.plans, rules: db.rules, today: today() });
+    var book = L.reportBook(reportCtx(list));
     var name = 'MasterPlan_보고서_' + (list.length === 1 ? list[0].replace(/\s+/g, '') : '전체') + tag() + '_' + today() + '.xlsx';
-    writeXlsx(name, sheets, { '요약': [22, 40, 10, 10], 'Master Plan': [12, 5, 14, 40, 12, 10, 11, 11, 11, 11, 8, 6].concat(Array(200).fill(9)), '개선대책 상세': [12, 14, 10, 40, 40, 40, 12, 10, 24, 24, 8, 12], '불량 상세': [12, 12, 12, 14, 40, 14, 20], '확정 이력': [12, 10, 18, 12] });
+    writeXlsx(name, book.sheets, book.meta);
     toast(name + ' 을 내려받았습니다.');
   }
   function renderReport(main) {
-    main.appendChild(pageHead('보고서 출력', '확정한 Master Plan 과 개선대책 상세를 보고서 형식의 Excel 로 내보냅니다.'));
-    var sups = Object.keys(db.plans).filter(function (s) { return db.plans[s].rows.length; }).sort();
-    if (!sups.length) {
-      main.appendChild(h('section', { class: 'card' }, h('p', null, '아직 Master Plan 이 없습니다. 보고서는 Master Plan 을 만든 협력사만 나옵니다.'), h('a', { class: 'btn btn-primary', href: '#/plan' }, 'MASTER PLAN 으로')));
-      return;
-    }
+    if (!db.records.length) { emptyNotice(main, '보고서 출력'); return; }
+    main.appendChild(pageHead('보고서 출력', '화면에 보이는 불량 목록·유형별/협력사별 집계·Master Plan·간트 일정을 같은 모양의 Excel 로 내보냅니다(머리글 굵게·열 폭·날짜 형식·상태 색).'));
+    var sups = suppliers();
     var st = ui.rep;
     if (st.supplier && sups.indexOf(st.supplier) < 0) st.supplier = '';
     var sel = select([['', '전체 (' + sups.length + '곳)']].concat(sups.map(function (s) { return [s, s]; })), st.supplier, { 'aria-label': '보고서 협력사' });
     sel.addEventListener('change', function () { st.supplier = sel.value; render(); });
     var list = st.supplier ? [st.supplier] : sups;
-    var sheets = L.reportSheets({ suppliers: list, records: all(), plans: db.plans, rules: db.rules, today: today() });
-    var unconfirmed = list.filter(function (s) { return !L.lastConfirmed(db.plans[s]) || L.planChangedSince(db.plans[s]); });
+    var sheets = L.reportSheets(reportCtx(list));
+    var noPlan = list.filter(function (s) { return !db.plans[s] || !db.plans[s].rows.length; });
+    var unconfirmed = list.filter(function (s) { return db.plans[s] && db.plans[s].rows.length && (!L.lastConfirmed(db.plans[s]) || L.planChangedSince(db.plans[s])); });
     main.appendChild(h('section', { class: 'card' },
       h('div', { class: 'filters' }, field('협력사', sel)),
-      unconfirmed.length ? h('p', { class: 'alert warn' }, '확정하지 않았거나 확정 뒤 계획을 바꾼 협력사: ' + unconfirmed.join(', ') + ' — 보고서의 「계획 상태」에 그대로 적힙니다.') : h('p', { class: 'alert info' }, '모두 확정한 계획입니다.'),
-      h('table', { class: 'list sheets' }, h('thead', null, h('tr', null, h('th', null, '시트'), h('th', null, '내용'), h('th', { class: 'num' }, '행'))),
-        h('tbody', null, [['요약', '협력사별 분석 기간·계획 상태·KPI·불량유형 파레토·개선 필요 항목'], ['Master Plan', '개선활동별 계획·실적·상태 + 주차 칸(○ 계획 · ● 실적)'], ['개선대책 상세', '불량유형별 발생 건수·선정 근거·대표 문제점·대책·담당'], ['불량 상세', '분석 기간의 공정불량 Raw data 와 분류 근거'], ['확정 이력', '확정 버전·일시']].map(function (x) {
-          return h('tr', null, h('td', { class: 'nw' }, x[0]), h('td', null, x[1]), h('td', { class: 'num' }, Math.max(0, sheets[x[0]].length - 1)));
-        }))),
+      unconfirmed.length ? h('p', { class: 'alert warn' }, '확정하지 않았거나 확정 뒤 계획을 바꾼 협력사: ' + unconfirmed.join(', ') + ' — 보고서의 「계획 상태」에 그대로 적힙니다.') : null,
+      noPlan.length ? h('p', { class: 'alert info' }, 'Master Plan 이 아직 없는 협력사: ' + noPlan.join(', ') + ' — 불량 목록·집계에는 들어가고 Master Plan·간트에는 빠집니다.') : null,
+      h('div', { class: 'table-wrap' }, h('table', { class: 'list sheets' }, h('thead', null, h('tr', null, h('th', null, '시트'), h('th', null, '화면'), h('th', null, '내용'), h('th', { class: 'num' }, '행'))),
+        h('tbody', null, [['요약', '대시보드·추진현황', '협력사별 분석 기간·불량 건수·개선 필요 항목·완료/미완료/보류·계획 상태'], ['불량 목록', '불량 등록', '발생일자·협력사·품번·품명·불량유형·내용·수량·조치 (거르기·틀 고정)'], ['유형별·협력사별 집계', '불량 분석', '불량유형 파레토 · 협력사별 건수 · 협력사×유형 교차표 · 개선 필요 항목'], ['Master Plan', 'MASTER PLAN', '개선활동별 대책·담당·계획·실적·상태(상태 색)'], ['간트 일정', 'MASTER PLAN 간트', '주차 칸 — ○ 계획(연한 파랑) · ● 실적(녹색 완료·주황 미완료·보라 보류)'], ['확정 이력', '계획 확정', '확정 버전·일시']].map(function (x) {
+          return h('tr', null, h('td', { class: 'nw' }, x[0]), h('td', { class: 'nw' }, x[1]), h('td', null, x[2]), h('td', { class: 'num' }, Math.max(0, sheets[x[0]].length - (x[0] === '간트 일정' ? 4 : 1))));
+        })))),
       h('div', { class: 'btn-row', style: 'margin-top:14px' },
         h('button', { type: 'button', class: 'btn btn-primary', onclick: function () { downloadReport(list); } }, icon('down'), 'Excel 보고서(.xlsx) 다운로드'),
         h('button', { type: 'button', class: 'btn', onclick: function () { window.print(); } }, '인쇄 / PDF'))));
     // 미리보기(인쇄에도 씀)
     var pv = h('section', { class: 'card report-preview' }, h('h2', null, '협력사 공정불량 분석 및 품질개선 Master Plan 보고서'), h('p', { class: 'note' }, '작성일 ' + today()));
     list.forEach(function (s) {
-      var p = db.plans[s], an = planAnalysis(s, p), x = L.planStats(p.rows, today());
+      var p = db.plans[s] || { rows: [], confirmed: [] }, an = planAnalysis(s, db.plans[s]), x = L.planStats(p.rows, today());
+      if (!p.rows.length) { pv.appendChild(h('h3', null, s + ' — Master Plan 없음')); pv.appendChild(h('p', null, '분석 기간 ' + an.from + ' ~ ' + an.to + ' · 공정불량 ' + an.total + '건 · 개선 필요 항목 ' + an.issues.length + '건')); return; }
       pv.appendChild(h('h3', null, s + ' — ' + L.planStateText(p)));
       pv.appendChild(h('p', null, '분석 기간 ' + an.from + ' ~ ' + an.to + ' · 공정불량 ' + an.total + '건 · 개선 필요 항목 ' + an.issues.length + '건 · 개선활동 ' + x.total + '건(완료 ' + x.done + ' · 미완료 ' + x.open + ' · 보류 ' + x.hold + (x.overdue ? ' · 지연 ' + x.overdue : '') + ')'));
       if (p.aiSummary) pv.appendChild(h('p', { class: 'note' }, 'AI 요약(검토 필요): ' + p.aiSummary));
@@ -1035,7 +1267,7 @@
 
   // ══ 설정 ═══════════════════════════════════════════════════
   function renderSettings(main) {
-    main.appendChild(pageHead('설정', '불량유형 키워드 사전·기본 대책, 담당부서, 개선 필요 항목 기준, AI 연결, 데이터 백업'));
+    main.appendChild(pageHead('설정', '불량유형 8종의 키워드·기본 대책, 담당부서, 개선 필요 항목 기준, 사내망 사용, AI 연결(선택), 데이터 백업'));
     main.appendChild(dictCard());
     var deptBox = h('textarea', { rows: '2' }); deptBox.value = db.depts.join(', ');
     main.appendChild(h('section', { class: 'card' }, h('h2', null, '담당부서 목록'),
@@ -1051,12 +1283,13 @@
       h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: db.mask, onchange: function (e) { db.mask = e.target.checked; save(); toast(db.mask ? '협력사·품번을 별칭으로 가립니다.' : '프롬프트에 실제 이름이 들어갑니다.', !db.mask); } }), '협력사 이름과 품번을 별칭으로 가리기(기본·권장)'),
       h('p', { class: 'note' }, '대응표: 협력사 ' + Object.keys(al.suppliers).length + '곳 · 품번 ' + Object.keys(al.parts).length + '개. 같은 이름은 늘 같은 별칭이 됩니다. 대응표는 이 브라우저와 JSON 백업에만 있습니다.')));
     main.appendChild(window.AIPanel.settingsCard({ toast: toast }));
-    main.appendChild(h('section', { class: 'card' }, h('h2', null, '사외망 접속과 공유'),
+    main.appendChild(h('section', { class: 'card' }, h('h2', null, '사내망에서 쓰기'),
       h('ul', null,
-        h('li', null, '이 도구는 GitHub Pages(정적 웹)라 사외망·휴대폰에서도 주소로 열 수 있습니다.'),
-        h('li', null, '다만 데이터는 각 브라우저 안에만 저장됩니다. 다른 사람·다른 PC 와 같은 데이터를 보려면 지금은 JSON 백업 파일을 주고받아야 합니다.'),
-        h('li', null, '팀·협력사가 함께 보는 공유 DB 와 로그인(협력사별 권한)은 2단계에서 다룹니다. 협력사도 보는지에 따라 설계가 달라져 확인을 요청드렸습니다(기획서 10장).'))));
-    main.appendChild(dataCard());
+        h('li', null, '이 도구는 외부 서버·인터넷을 부르지 않습니다. 엑셀 읽기·쓰기(SheetJS)도 폴더 안 vendor/ 파일을 씁니다.'),
+        h('li', null, '폴더를 통째로 사내 공유 드라이브나 사내 웹서버에 두고 index.html 을 열면 됩니다. 내 PC 에서 index.html 을 더블클릭해도 동작합니다.'),
+        h('li', null, '데이터는 각 PC 의 브라우저 안에만 저장됩니다. 다른 사람과 나누거나 PC 를 바꿀 때는 「백업 · 복원」의 JSON·엑셀 파일을 사내 공유 폴더로 주고받으세요.'),
+        h('li', null, 'AI 는 선택입니다. 사내에서 쓰도록 허용된 AI 가 있을 때만 아래 「AI 연결 설정」에 그 주소를 적으세요. 없으면 Master Plan 은 규칙(기본 대책)으로 만듭니다.'))));
+    main.appendChild(backupCard());
   }
   function dictCard() {
     var counts = {};
@@ -1105,7 +1338,7 @@
       return true;
     }
     return h('section', { class: 'card' }, h('h2', null, '불량유형 키워드 사전 · 기본 대책'),
-      h('p', { class: 'note' }, '문제점 글에 키워드가 들어 있으면 그 불량유형으로 나눕니다. 기본 대책은 Master Plan 초안에 들어갑니다. 지금 값은 1단계 가정입니다 — 실제 불량유형 코드표와 담당부서 목록을 받으면 그대로 옮깁니다(기획서 10장 ②).'),
+      h('p', { class: 'note' }, '불량유형 8종은 부품품질팀이 정한 분류입니다(위치/치수 · 간섭/정렬 · 이종/누락 · 용접불량 · 누유/누수 · 미조임 · 성능이상 · 기타). 등록할 때 유형을 고르지 않았거나 붙여 넣은 표에 유형 칸이 없으면, 내용에 든 키워드로 나눕니다. 키워드와 기본 대책(Master Plan 초안에 들어감)은 가정이니 현장 표현에 맞게 고쳐 주세요.'),
       datalist('dl-depts2', db.depts),
       list,
       h('div', { class: 'btn-row', style: 'margin-top:12px' },
@@ -1116,7 +1349,7 @@
           db.types.push({ name: n, dept: '협력사', keywords: [], actions: [] }); save(); render();
         } }, '유형 더하기'),
         h('button', { type: 'button', class: 'btn btn-danger', onclick: function () {
-          confirmBox('기본 사전으로 되돌리기', '불량유형 사전과 기본 대책을 처음 값으로 되돌립니다. 직접 더한 키워드·유형은 사라집니다.', '되돌리기', function () { db.types = L.defaultTypes(); save(); render(); }, true);
+          confirmBox('기본 사전으로 되돌리기', '불량유형 사전(8종)과 기본 대책을 처음 값으로 되돌립니다. 직접 더한 키워드·유형은 사라집니다.', '되돌리기', function () { db.types = L.defaultTypes(); save(); render(); }, true);
         } }, '기본값으로')));
   }
   function rulesCard() {
@@ -1137,24 +1370,5 @@
         } }, '저장'),
         h('button', { type: 'button', class: 'btn', onclick: function () { db.rules = L.cleanRules({}); save(); render(); } }, '시작값으로')));
   }
-  function dataCard() {
-    var input = h('input', { type: 'file', accept: '.json,application/json', onchange: function (e) {
-      var f = e.target.files[0]; e.target.value = '';
-      if (!f) return;
-      f.text().then(function (t) {
-        var o = JSON.parse(t), d = L.restoreDb(o && o.db ? o.db : o);
-        confirmBox('백업 되살리기', f.name + ' — Raw data ' + d.records.length + '건, Master Plan ' + Object.keys(d.plans).length + '곳.\n지금 데이터를 이 백업으로 바꿉니다.', '되살리기', function () { db = d; save(); toast('되살렸습니다.'); render(); }, true);
-      }).catch(function () { toast('JSON 백업 파일을 읽지 못했습니다.', true); });
-    } });
-    return h('section', { class: 'card' }, h('h2', null, '데이터 백업'),
-      h('p', { class: 'note' }, 'Raw data·사전·Master Plan·확정 이력·별칭 대응표를 JSON 한 파일로 받습니다. AI 키는 넣지 않습니다. 다른 PC 로 옮기거나 다른 사람에게 줄 때 씁니다.'),
-      h('div', { class: 'btn-row' },
-        h('button', { type: 'button', class: 'btn btn-primary', onclick: function () {
-          download('data10-07_백업' + tag() + '_' + today() + '.json', new Blob([JSON.stringify({ app: 'data10-07', at: nowIso(), db: db }, null, 1)], { type: 'application/json' }));
-        } }, 'JSON 백업 받기'),
-        h('label', { class: 'btn file-btn' }, '백업 되살리기', input),
-        db.records.length ? h('button', { type: 'button', class: 'btn btn-danger', onclick: clearAll }, '데이터 전부 지우기') : null));
-  }
-
   render();
 })();

@@ -435,3 +435,13 @@ body.drawer-open { overflow: hidden; }
   .table-wrap { overflow: visible; border: none; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* 2차 반영 — 불량 등록·붙여넣기·접는 AI 칸 */
+.paste-box { width: 100%; min-height: 120px; white-space: pre; overflow-wrap: normal; }
+tr.row-edit td { background: #fff7e0; }
+details.ai-card > summary { list-style: none; cursor: pointer; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+details.ai-card > summary::-webkit-details-marker { display: none; }
+details.ai-card > summary h2::before { content: '▸ '; color: var(--primary); }
+details.ai-card[open] > summary h2::before { content: '▾ '; }
+details.ai-card > summary .note { flex: 1 1 260px; }
+details.ai-card[open] > summary { margin-bottom: 10px; }

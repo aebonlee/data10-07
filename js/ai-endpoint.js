@@ -1,7 +1,7 @@
 /* AI 연결 설정 — OpenAI 호환(Chat Completions) 엔드포인트. data09-25 의 같은 파일을 옮겨 왔습니다(저장 칸 이름만 다름).
 
+   · 사내망 전용 도구라 기본값은 「AI 없음」입니다. 사내에서 쓰도록 허용된 AI 가 있을 때만 주소를 넣습니다.
    · 주소(Base URL)·모델 이름·키(선택)를 사용자가 넣습니다. 고정된 외부 주소는 없습니다.
-     - 외부 서비스 예: https://api.openai.com/v1
      - 사내 서버 예: 사내 온프레미스 LLM 서버가 「OpenAI 호환 API」를 열어 두었다면 그 주소(예: https://llm.사내도메인/v1).
        vLLM·Ollama 같은 오픈소스 서버는 이런 호환 API 를 제공합니다(주소·포트는 사내 설정에 따름).
    · 키는 비워 둘 수 있습니다(사내 서버가 키 없이 열려 있을 때). 넣으면 Authorization: Bearer 로 보냅니다.
@@ -18,7 +18,6 @@
   var STORE_KEY = 'data10-07.ai';
   var PRESETS = [
     { id: 'custom', label: '사내·기타 OpenAI 호환 서버(주소 직접 입력)', baseUrl: '' },
-    { id: 'openai', label: 'OpenAI (외부 서비스)', baseUrl: 'https://api.openai.com/v1' },
     { id: 'local', label: '내 PC 에서 띄운 서버 예시(http://localhost:8000/v1)', baseUrl: 'http://localhost:8000/v1' }
   ];
 

@@ -65,10 +65,10 @@
         status.lastChild.textContent = '연결됨 — 서버 답: ' + t.slice(0, 80);
       }, function (e) { status.lastChild.textContent = e.message; status.lastChild.className = 'alert warn'; });
     }
-    return h('section', { class: 'card', id: 'aiSettings' }, h('h2', null, 'AI 연결 설정 (선택 — 자동 보내기)'),
-      h('p', { class: 'note' }, '기본은 반자동입니다(프롬프트 복사 → 회사가 허용한 AI 에 붙여 넣기 → 답 붙여 넣기). ' +
-        '사내 온프레미스 LLM 이나 본인 OpenAI 키를 쓰려면 여기 적어 주세요. OpenAI 는 서버 종류에서 고르고 키를 넣으면 됩니다. 사내 LLM 이 「OpenAI 호환 API」(주소가 보통 …/v1 로 끝남)를 열어 두었다면 여기 주소·모델을 적어 버튼 한 번으로 보낼 수 있습니다. ' +
-        'vLLM·Ollama 같은 오픈소스 서버는 이런 호환 API 를 제공합니다.'),
+    return h('section', { class: 'card', id: 'aiSettings' }, h('h2', null, 'AI 연결 설정 (선택 — 사내 허용 AI 가 있을 때만)'),
+      h('p', { class: 'note' }, '비워 두는 것이 기본입니다. 비워 두면 이 도구는 어떤 외부 주소도 부르지 않고, Master Plan 초안은 규칙(기본 대책)으로 만듭니다. ' +
+        '사내에서 쓰도록 허용된 AI 서버가 「OpenAI 호환 API」(주소가 보통 …/v1 로 끝남)를 열어 두었다면 그 주소·모델을 적어 버튼 한 번으로 보낼 수 있습니다. ' +
+        '그런 서버가 없으면 MASTER PLAN 의 프롬프트를 복사해 사내에서 허용된 AI 화면에 붙여 넣는 방법(반자동)도 있습니다.'),
       h('div', { class: 'form-grid' },
         fld('서버 종류', preset),
         fld('AI 서버 주소(Base URL)', urlIn, '…/v1 까지. /chat/completions 는 도구가 붙입니다.'),

@@ -14,8 +14,8 @@ const aoa = Sample.aoa().map((row, i) => i < 3 ? row : row.map((v, c) => c === 1
 
 const wb = XLSX.utils.book_new();
 const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true, dateNF: 'yyyy-mm-dd' });
-ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 6 } }];
-ws['!cols'] = [{ wch: 6 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 34 }, { wch: 6 }];
+ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 7 } }];
+ws['!cols'] = [{ wch: 6 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 34 }, { wch: 6 }, { wch: 18 }];
 XLSX.utils.book_append_sheet(wb, ws, '공정불량 RAW');
 // 안내 시트 — 앱은 머리행이 맞는 「공정불량 RAW」 시트를 고릅니다
 XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['이 파일은 도구 시험용 가상 데이터입니다.'], ['협력사 A~F · 품번 TP-… 는 모두 지어낸 이름입니다.']]), '안내');
